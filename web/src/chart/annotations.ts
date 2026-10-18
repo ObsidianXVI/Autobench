@@ -26,6 +26,8 @@ export const USER_COLOR = "#38bdf8";
 
 type XY = { x: number; y: number };
 
+let paneWidth = 10000; // set on each draw so labels can be kept inside the pane
+
 /** Maps epoch-second times to chart x coordinates, interpolating between bars and
  *  extrapolating beyond the loaded data (e.g. a trade plan that ends in the future). */
 export class TimeMapper {
@@ -98,6 +100,7 @@ function label(ctx: CanvasRenderingContext2D, text: string, x: number, y: number
   let left = x;
   if (opts.align === "right") left = x - w;
   if (opts.align === "center") left = x - w / 2;
+  left = Math.max(2, Math.min(left, paneWidth - w - 2));
   ctx.setLineDash([]);
   ctx.fillStyle = opts.bg ?? "rgba(15,23,42,0.85)";
   ctx.strokeStyle = color;
@@ -131,6 +134,7 @@ class Renderer implements IPrimitivePaneRenderer {
   draw(target: CanvasRenderingTarget2D) {
     target.useMediaCoordinateSpace(({ context: ctx, mediaSize }) => {
       const L = this.layer;
+      paneWidth = mediaSize.width;
       for (const a of L.annotations) {
         if (!a.visible) continue;
         L.drawOne(ctx, a, mediaSize.width, mediaSize.height, a.id === L.selectedId, a.id === L.hoverId);
@@ -165,7 +169,6 @@ export class AnnotationLayer implements ISeriesPrimitive<Time> {
   selectedId: string | null = null;
   hoverId: string | null = null;
   private width = 0;
-  private height = 0;
 
   attached(p: SeriesAttachedParameter<Time>) {
     this.chart = p.chart as IChartApi;
@@ -196,7 +199,14 @@ export class AnnotationLayer implements ISeriesPrimitive<Time> {
     if (t == null || !this.chart) return null;
     const lg = this.mapper.logical(t);
     if (lg == null) return null;
-    return this.chart.timeScale().logicalToCoordinate(lg as Logical);
+    // logicalToCoordinate only handles integer indexes: interpolate between neighbours ourselves
+    const ts = this.chart.timeScale();
+    const i = Math.floor(lg);
+    const x0 = ts.logicalToCoordinate(i as Logical);
+    if (x0 == null) return null;
+    if (lg === i) return x0;
+    const x1 = ts.logicalToCoordinate((i + 1) as Logical);
+    return x1 == null ? x0 : x0 + (lg - i) * (x1 - x0);
   }
 
   y(p: number | null): number | null {
@@ -214,7 +224,6 @@ export class AnnotationLayer implements ISeriesPrimitive<Time> {
 
   drawOne(ctx: CanvasRenderingContext2D, a: Annotation, W: number, H: number, selected: boolean, hover: boolean) {
     this.width = W;
-    this.height = H;
     const base = a.style?.color ?? (a.author === "agent" ? AGENT_COLOR : USER_COLOR);
     const lw = (a.style?.line_width ?? (a.type === "horizontal_line" ? 1.5 : 2)) + (selected || hover ? 1 : 0);
     ctx.save();
@@ -273,7 +282,7 @@ export class AnnotationLayer implements ISeriesPrimitive<Time> {
         const x = this.x(a.points[0].time);
         if (x == null) break;
         line({ x, y: 0 }, { x, y: H });
-        if (text) label(ctx, badge + text, x + 4, 14, base);
+        if (text) label(ctx, badge + text, x + 4, H - 14, base);
         break;
       }
       case "rectangle": {

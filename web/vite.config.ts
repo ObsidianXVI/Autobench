@@ -1,7 +1,8 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-const backend = process.env.AUTOBENCH_BACKEND ?? "http://127.0.0.1:8000";
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const backend = (globalThis as any).process?.env?.AUTOBENCH_BACKEND ?? "http://127.0.0.1:8000";
 
 export default defineConfig({
   plugins: [react()],
