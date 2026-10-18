@@ -48,20 +48,50 @@ def _max_pain(calls: pd.DataFrame, puts: pd.DataFrame) -> float | None:
     return float(strikes[int(np.argmin(pain))])
 
 
-def options_overview(symbol: str, max_expirations: int = 6) -> dict:
+def pick_expirations(exps: list[str], today: date, event_date: date | None = None) -> list[str]:
+    """Front weeklies for near-term sentiment, plus the first expiry after an upcoming event
+    (earnings) and the expiries nearest 30/60/90/180 days for the term structure."""
+    dated = sorted((date.fromisoformat(e), e) for e in exps)
+    future = [(d, e) for d, e in dated if d >= today]
+    chosen = [e for _, e in future[:3]]
+    if event_date:
+        after = next((e for d, e in future if d > event_date), None)
+        if after:
+            chosen.append(after)
+    for target in (30, 60, 90, 180):
+        if future:
+            chosen.append(min(future, key=lambda de: abs((de[0] - today).days - target))[1])
+    seen = set()
+    return [e for e in sorted(chosen) if not (e in seen or seen.add(e))]
+
+
+def _next_earnings(symbol: str) -> date | None:
+    try:
+        from .fundamentals import get_earnings
+
+        nxt = get_earnings(symbol).get("next_earnings")
+        nxt = nxt[0] if isinstance(nxt, list) and nxt else nxt
+        return date.fromisoformat(str(nxt)[:10]) if nxt else None
+    except Exception:
+        return None
+
+
+def options_overview(symbol: str) -> dict:
     symbol = normalize_symbol(symbol)
     exps = _expirations(symbol)
     if not exps:
         raise ProviderError(f"No listed options for {symbol}")
     spot = get_quote(symbol)["price"]
     today = datetime.now(UTC).date()
+    earnings = _next_earnings(symbol)
+    selected = pick_expirations(exps, today, earnings)
 
     def fetch():
         term = []
         tot = {"call_volume": 0.0, "put_volume": 0.0, "call_oi": 0.0, "put_oi": 0.0}
         front = None
         unusual = []
-        for exp in exps[:max_expirations]:
+        for exp in selected:
             dte = (date.fromisoformat(exp) - today).days
             try:
                 calls, puts = _chain(symbol, exp)
@@ -88,6 +118,7 @@ def options_overview(symbol: str, max_expirations: int = 6) -> dict:
             skew = float(put_k["impliedVolatility"].iloc[0] - call_k["impliedVolatility"].iloc[0]) * 100 if len(put_k) and len(call_k) else None
             row = {
                 "expiration": exp, "dte": dte, "atm_strike": atm_k,
+                **({"spans_earnings": True} if earnings and date.fromisoformat(exp) > earnings >= today else {}),
                 "atm_iv_pct": round(float(iv) * 100, 1) if np.isfinite(iv) else None,
                 "straddle_price": round(straddle, 2) if np.isfinite(straddle) else None,
                 "expected_move_pct": round(straddle / spot * 100, 2) if np.isfinite(straddle) else None,
@@ -100,18 +131,20 @@ def options_overview(symbol: str, max_expirations: int = 6) -> dict:
                          "put_oi_top_strikes": puts.nlargest(3, "openInterest")["strike"].tolist()}
         return {"term": term, "totals": tot, "front": front, "unusual": sorted(unusual, key=lambda u: -u["volume"])[:10]}
 
-    d = db.cached(f"opt_overview:{symbol}:{max_expirations}", 900, fetch)
+    d = db.cached(f"opt_overview:{symbol}:{",".join(selected)}", 900, fetch)
     tot = d["totals"]
     return clean({
         "symbol": symbol, "spot": spot,
         "expirations_available": len(exps),
+        "next_earnings": earnings.isoformat() if earnings else None,
         "term_structure": d["term"],
         "put_call_volume_ratio": round(tot["put_volume"] / tot["call_volume"], 2) if tot["call_volume"] else None,
         "put_call_oi_ratio": round(tot["put_oi"] / tot["call_oi"], 2) if tot["call_oi"] else None,
         "front_expiry": d["front"],
         "unusual_activity": d["unusual"],
-        "notes": "expected_move_pct = ATM straddle / spot (market-implied ±move by expiry). Rising IV into a date "
-                 "usually marks an event (earnings). Positive skew = puts richer than calls (downside hedging demand). "
+        "notes": "expected_move_pct = ATM straddle / spot (market-implied ±move by expiry). spans_earnings marks "
+                 "expiries after the next earnings date: the jump in expected move vs the prior expiry approximates the "
+                 "earnings move priced in. Positive skew = puts richer than calls (downside hedging demand). "
                  "Volume/OI data from Yahoo may be stale outside market hours.",
     })
 

@@ -68,6 +68,19 @@ def test_options_max_pain():
     assert options._max_pain(calls, puts) == 100.0
 
 
+def test_pick_expirations_covers_earnings_and_term():
+    from datetime import date
+
+    exps = ["2026-10-19", "2026-10-21", "2026-10-23", "2026-10-30", "2026-11-06", "2026-11-20", "2026-12-18",
+            "2027-01-15", "2027-03-19", "2027-06-17"]
+    got = options.pick_expirations(exps, date(2026, 10, 18), date(2026, 11, 4))
+    assert got[:3] == ["2026-10-19", "2026-10-21", "2026-10-23"]
+    assert "2026-11-06" in got  # first expiry after earnings
+    assert "2026-11-20" in got and "2026-12-18" in got and "2027-01-15" in got and "2027-03-19" in got
+    assert got == sorted(set(got))
+    assert options.pick_expirations(["2020-01-17"], date(2026, 10, 18)) == []
+
+
 TENK = """<html><head><title>x</title></head><body><ix:header><p>hidden xbrl</p></ix:header>
 <p>TABLE OF CONTENTS</p><p>Item 1. Business</p><p>Item 1A. Risk Factors</p><p>Item 7. Management's Discussion</p>
 <p>PART I</p><p>Item 1. Business</p><p>We make widgets. """ + "Widgets are great. " * 60 + """</p>

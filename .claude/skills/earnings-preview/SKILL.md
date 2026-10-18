@@ -10,8 +10,10 @@ description: Pre- or post-earnings analysis for a stock — beat/miss history, c
    consensus EPS/revenue for 0q with low/high range (dispersion = uncertainty); `eps_trend` (7/30/60/90
    day drift) and `eps_revisions` (up vs down counts). Rising estimates into the print = bar is higher
    but fundamentals improving; falling = lowered bar.
-2. `get_options_overview(symbol)` — expected move (ATM straddle) for the first expiry after the date,
-   IV term structure kink around the date, skew (downside demand), put/call.
+2. `get_options_overview(symbol)` — the first expiry after the earnings date is flagged `spans_earnings`.
+   Implied earnings move ≈ that expiry's `expected_move_pct` minus the normal (non-event) move for the
+   same days, which you can infer from the pre-earnings weeklies (scale by √time). Also: IV term
+   structure kink around the date, skew (downside demand), put/call.
 3. Historical reactions — find past earnings dates from `get_earnings.history` and measure the
    next-session move with `get_price_history(symbol, "1d", start=<date-5d>, end=<date+5d>)` for the
    last 4-8 reports. Compare average |move| with today's implied move: implied ≫ realised history →
