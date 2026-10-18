@@ -132,11 +132,11 @@ class YahooProvider:
         return out
 
     def news(self, symbol: str, limit: int = 20) -> list[dict]:
+        out = []
         try:
             items = yf.Ticker(yahoo_symbol(symbol)).get_news(count=limit) or []
-        except Exception as e:
-            raise ProviderError(f"Yahoo news failed for {symbol}: {e}") from e
-        out = []
+        except Exception:
+            items = []
         for it in items:
             c = it.get("content", it)
             url = (c.get("canonicalUrl") or {}).get("url") or (c.get("clickThroughUrl") or {}).get("url") or c.get("link")
@@ -148,8 +148,23 @@ class YahooProvider:
                 "url": url,
                 "symbols": [symbol],
             })
+        if not out:
+            # the per-ticker news endpoint is frequently empty; search news is a usable fallback
+            try:
+                found = yf.Search(symbol, news_count=limit, max_results=1).news or []
+            except Exception as e:
+                raise ProviderError(f"Yahoo news failed for {symbol}: {e}") from e
+            for n in found:
+                ts = n.get("providerPublishTime")
+                out.append({
+                    "headline": n.get("title"),
+                    "summary": "",
+                    "source": n.get("publisher"),
+                    "published_at": datetime.fromtimestamp(ts, UTC).isoformat() if ts else None,
+                    "url": n.get("link"),
+                    "symbols": n.get("relatedTickers") or [symbol],
+                })
         return out[:limit]
-
 
 def _f(x) -> float | None:
     try:
