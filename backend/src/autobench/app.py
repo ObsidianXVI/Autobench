@@ -19,7 +19,9 @@ from .config import REPO_DIR, get_settings
 from .mcp_server import mcp
 from .providers.base import ProviderError
 from .schemas import AnalysisIn, AnnotationIn, AnnotationPatch, ChartView, NoteIn
-from .services import analyses, annotations, backtest, fundamentals, market, market_context, technicals, workspace
+from .services import alerts as alerts_svc
+from .services import analyses, annotations, backtest, fundamentals, macro, market, market_context, screener
+from .services import scheduler, technicals, workspace
 from .services import indicators as ind
 from .services import news as news_svc
 from .services import options as options_svc
@@ -67,6 +69,35 @@ class StudyBody(BaseModel):
     horizons: list[int] = [5, 10, 20]
 
 
+class ScreenBody(BaseModel):
+    universe: str | None = "all"
+    filters: list[dict[str, Any]] = Field(default_factory=list)
+    expression: str | None = None
+    signal: str | None = None
+    search: str | None = None
+    sort: str | None = None
+    view: str | None = "overview"
+    columns: list[str] | None = None
+    offset: int = Field(0, ge=0)
+    limit: int = Field(50, ge=1, le=500)
+
+
+class AlertBody(BaseModel):
+    symbol: str
+    kind: str
+    value: float | None = None
+    expression: str | None = None
+    interval: str = "1d"
+    message: str | None = None
+    repeat: bool = False
+    annotation_id: str | None = None
+
+
+class LayoutBody(BaseModel):
+    data: dict[str, Any]
+    summary: str | None = None
+
+
 class WatchlistPatch(BaseModel):
     add: list[str] | None = None
     remove: list[str] | None = None
@@ -81,8 +112,11 @@ def create_app() -> FastAPI:
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):
         bus.bind_loop(asyncio.get_running_loop())
+        if settings.autobench_background:
+            scheduler.start()
         async with mcp.session_manager.run():
             yield
+        scheduler.stop()
 
     app = FastAPI(title="Autobench", version="0.1.0", lifespan=lifespan)
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["*"], allow_headers=["*"])
@@ -270,6 +304,134 @@ def create_app() -> FastAPI:
     @app.put("/api/view")
     def view_set(v: ChartView):
         return workspace.set_view(v, author="user")
+
+    # --- quotes, screener, heatmap, breadth -------------------------------------------------
+
+    @app.get("/api/quotes")
+    def quotes(symbols: str):
+        syms = [x for x in symbols.split(",") if x.strip()][:300]
+        return market.get_quotes(syms)
+
+    @app.get("/api/screener/meta")
+    def screener_meta():
+        return screener.meta()
+
+    @app.post("/api/screener")
+    def screener_run(b: ScreenBody):
+        return screener.screen(b.filters, b.expression, b.signal, b.universe, b.sort, b.columns, b.view, b.offset, b.limit,
+                               b.search)
+
+    @app.get("/api/screens")
+    def screens_list():
+        return screener.list_screens()
+
+    @app.put("/api/screens/{name}")
+    def screens_save(name: str, spec: dict = Body(...)):
+        return screener.save_screen(name, spec)
+
+    @app.delete("/api/screens/{name}")
+    def screens_delete(name: str):
+        return screener.delete_screen(name)
+
+    @app.get("/api/snapshot/{symbol}")
+    def snapshot(symbol: str):
+        return screener.snapshot(symbol)
+
+    @app.get("/api/heatmap")
+    def heatmap(universe: str = "sp500", period: str = "1d", limit: int = Query(1500, ge=10, le=6000)):
+        return screener.heatmap(universe, period, limit=limit)
+
+    @app.get("/api/breadth")
+    def breadth(universe: str = "all"):
+        return screener.breadth(universe)
+
+    @app.get("/api/universe/status")
+    def universe_status():
+        from .services.universe import universe as u
+
+        return u.status()
+
+    @app.post("/api/universe/refresh")
+    def universe_refresh(parts: str | None = None):
+        from .services.universe import universe as u
+
+        wanted = [p for p in (parts or "listings,fundamentals,bars,quotes").split(",") if p]
+        bad = [p for p in wanted if p not in u.layers()]
+        if bad:
+            raise HTTPException(400, f"unknown parts: {', '.join(bad)}")
+        u.ensure(wanted)
+        return u.status()
+
+    # --- macro, cross-asset, calendars ------------------------------------------------------
+
+    @app.get("/api/macro")
+    def macro_dash():
+        return macro.macro_dashboard()
+
+    @app.get("/api/macro/series/{series_id}")
+    def macro_series(series_id: str, start: str | None = None):
+        return macro.macro_series(series_id, start)
+
+    @app.get("/api/markets")
+    def markets(groups: str | None = None):
+        return macro.markets_board(groups.split(",") if groups else None)
+
+    @app.get("/api/calendar/earnings")
+    def cal_earnings(days: int = Query(7, ge=1, le=31), start: str | None = None, universe: str = "all",
+                     symbols: str | None = None, min_market_cap: float = 0):
+        return macro.earnings_calendar(days, start, universe, symbols.split(",") if symbols else None, min_market_cap)
+
+    @app.get("/api/calendar/economic")
+    def cal_economic(days: int = Query(7, ge=1, le=31), start: str | None = None, country: str | None = "United States"):
+        return macro.economic_calendar(days, start, country or None)
+
+    # --- alerts -----------------------------------------------------------------------------
+
+    @app.get("/api/alerts")
+    def alerts_list(symbol: str | None = None, status: str | None = None):
+        return alerts_svc.list_(symbol, status)
+
+    @app.post("/api/alerts")
+    def alerts_create(b: AlertBody):
+        return alerts_svc.create(**b.model_dump(), author="user")
+
+    @app.patch("/api/alerts/{alert_id}")
+    def alerts_update(alert_id: str, patch: dict = Body(...)):
+        return alerts_svc.update(alert_id, patch)
+
+    @app.delete("/api/alerts/{alert_id}")
+    def alerts_delete(alert_id: str):
+        return alerts_svc.delete(alert_id)
+
+    @app.post("/api/alerts/check")
+    def alerts_check():
+        return alerts_svc.check()
+
+    # --- layouts & UI state -----------------------------------------------------------------
+
+    @app.get("/api/layouts")
+    def layouts_list():
+        return workspace.list_layouts()
+
+    @app.get("/api/layouts/{name}")
+    def layouts_get(name: str):
+        return workspace.get_layout(name)
+
+    @app.put("/api/layouts/{name}")
+    def layouts_save(name: str, b: LayoutBody):
+        return workspace.save_layout(name, b.data, b.summary)
+
+    @app.delete("/api/layouts/{name}")
+    def layouts_delete(name: str):
+        return workspace.delete_layout(name)
+
+    @app.get("/api/ui-state")
+    def ui_state_get():
+        return workspace.get_ui_state()
+
+    @app.put("/api/ui-state")
+    def ui_state_set(data: dict = Body(...)):
+        return workspace.set_ui_state(data)
 
     @app.post("/api/events/relay")
     def relay(request: Request, msg: dict = Body(...)):

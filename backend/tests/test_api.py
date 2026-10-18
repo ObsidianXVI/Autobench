@@ -110,3 +110,51 @@ def test_mcp_endpoint_mounted(client):
         headers={"Accept": "application/json, text/event-stream", "Host": "127.0.0.1:8000"})
     assert r.status_code == 200
     assert "autobench" in r.text
+
+
+def test_workbench_endpoints(client):
+    from autobench.services.universe import universe
+
+    universe.ensure(wait=True)
+    q = client.get("/api/quotes", params={"symbols": "AAPL,MSFT,^VIX"}).json()
+    assert {"AAPL", "MSFT"} <= set(q) and q["AAPL"]["price"] > 0
+    meta = client.get("/api/screener/meta").json()
+    assert {f["key"] for f in meta["fields"]} >= {"pe", "rsi14", "market_cap"} and "valuation" in meta["views"]
+    r = client.post("/api/screener", json={"expression": "pe > 0", "sort": "pe", "view": "valuation", "limit": 5}).json()
+    pes = [x["pe"] for x in r["rows"]]
+    assert pes == sorted(pes) and r["columns"][0] == "symbol"
+    bad = client.post("/api/screener", json={"expression": "import os"})
+    assert bad.status_code == 400
+    assert client.put("/api/screens/mine", json={"signal": "top_gainers"}).json()["name"] == "mine"
+    assert client.get("/api/screens").json()[0]["signal"] == "top_gainers"
+    assert client.delete("/api/screens/mine").status_code == 200
+    assert client.get("/api/snapshot/AAPL").json()["symbol"] == "AAPL"
+    assert client.get("/api/snapshot/ZZZZ").status_code == 404
+    hm = client.get("/api/heatmap", params={"universe": "all", "period": "1m"}).json()
+    assert hm["metric"] == "perf_1m" and hm["sectors"]
+    assert client.get("/api/breadth").json()["count"] == 10
+    assert set(client.get("/api/universe/status").json()) == {"listings", "fundamentals", "bars", "quotes"}
+    assert client.post("/api/universe/refresh", params={"parts": "nope"}).status_code == 400
+    assert client.get("/api/macro").json()["curve"]
+    assert client.get("/api/macro/series/UNRATE").json()["points"]
+    assert client.get("/api/calendar/earnings", params={"days": 3}).json()["count"] >= 1
+    assert client.get("/api/calendar/economic").json()["count"] >= 1
+
+
+def test_alert_and_layout_endpoints(client):
+    a = client.post("/api/alerts", json={"symbol": "aapl", "kind": "below", "value": 1}).json()
+    assert a["symbol"] == "AAPL" and a["status"] == "active"
+    assert client.post("/api/alerts", json={"symbol": "AAPL", "kind": "below"}).status_code == 400
+    assert client.patch(f"/api/alerts/{a['id']}", json={"status": "paused"}).json()["status"] == "paused"
+    assert client.patch(f"/api/alerts/{a['id']}", json={"symbol": "X"}).status_code == 400
+    assert client.get("/api/alerts", params={"status": "paused"}).json()[0]["id"] == a["id"]
+    assert client.delete(f"/api/alerts/{a['id']}").status_code == 200
+    assert client.delete(f"/api/alerts/{a['id']}").status_code == 404
+    lay = {"grid": "2x2", "charts": [{"symbol": "SPY", "interval": "1d"}]}
+    assert client.put("/api/layouts/Quad", json={"data": lay, "summary": "4 charts"}).json()["name"] == "Quad"
+    assert client.get("/api/layouts").json()[0]["summary"] == "4 charts"
+    assert client.get("/api/layouts/Quad").json()["data"] == lay
+    assert client.delete("/api/layouts/Quad").status_code == 200
+    assert client.get("/api/layouts/Quad").status_code == 404
+    assert client.put("/api/ui-state", json={"page": "heatmap"}).json() == {"ok": True}
+    assert client.get("/api/ui-state").json() == {"page": "heatmap"}

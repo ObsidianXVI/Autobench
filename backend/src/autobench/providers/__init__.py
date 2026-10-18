@@ -3,6 +3,7 @@ Yahoo always serves index/futures/FX symbols and fundamentals."""
 
 from __future__ import annotations
 
+import re
 import threading
 
 from ..config import get_settings
@@ -35,8 +36,10 @@ def _get(name: str):
 
 
 def yahoo_only_symbol(symbol: str) -> bool:
-    """Indices (^VIX), futures (CL=F), FX (EURUSD=X) are not available from Alpaca."""
-    return symbol.startswith("^") or "=" in symbol
+    """Indices (^VIX), futures (CL=F), FX (EURUSD=X), crypto (BTC-USD) and foreign listings or
+    exchange-suffixed symbols (000001.SS, DX-Y.NYB) are not available from Alpaca."""
+    return (symbol.startswith("^") or "=" in symbol or symbol.endswith("-USD")
+            or re.search(r"\.[A-Z]{2,}$", symbol) is not None)
 
 
 def bar_provider_for(symbol: str) -> BarProvider:

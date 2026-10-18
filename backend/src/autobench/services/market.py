@@ -260,6 +260,52 @@ def get_quote(symbol: str) -> dict:
     return db.cached(f"quote:{symbol}", 15, fetch)
 
 
+def get_quotes(symbols: list[str]) -> dict[str, dict]:
+    """Quotes for many symbols: one batched Alpaca snapshot request for stocks/ETFs, per-symbol
+    Yahoo for indices/futures/FX/crypto. Symbols without data are omitted."""
+    syms = list(dict.fromkeys(normalize_symbol(s) for s in symbols if s and s.strip()))
+    out: dict[str, dict] = {}
+    pending = []
+    for s in syms:
+        hit = db.cache_get(f"quote:{s}")
+        if hit is not None:
+            out[s] = hit
+        else:
+            pending.append(s)
+    a = alpaca_provider()
+    batchable = [s for s in pending if a is not None and not yahoo_only_symbol(s)]
+    if batchable:
+        try:
+            snaps = a.snapshots(batchable)
+        except ProviderError as e:
+            log.warning("batched quotes failed: %s", e)
+            snaps = {}
+        for s, q in snaps.items():
+            price, prev = q.get("price"), q.get("previous_close")
+            if price is not None and prev:
+                q["change"] = round(price - prev, 4)
+                q["change_pct"] = round((price / prev - 1) * 100, 3)
+            q["symbol"] = s
+            q["as_of"] = now_ts()
+            db.cache_set(f"quote:{s}", q, 15)
+            out[s] = q
+    rest = [s for s in pending if s not in out]
+    if rest:
+        from concurrent.futures import ThreadPoolExecutor
+
+        def one(s):
+            try:
+                return s, get_quote(s)
+            except Exception:
+                return s, None
+
+        with ThreadPoolExecutor(min(8, len(rest))) as pool:
+            for s, q in pool.map(one, rest):
+                if q:
+                    out[s] = q
+    return {s: out[s] for s in syms if s in out}
+
+
 # --- search --------------------------------------------------------------------------------
 
 _ASSET_REFRESH_SECONDS = 86400

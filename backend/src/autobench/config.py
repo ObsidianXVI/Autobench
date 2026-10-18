@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     autobench_port: int = 8000
     autobench_db_path: str = ""
     autobench_cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    autobench_background: bool = True  # scheduler: alerts, universe/macro refreshes (serve only)
 
     @property
     def alpaca_enabled(self) -> bool:

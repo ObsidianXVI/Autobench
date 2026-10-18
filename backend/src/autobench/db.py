@@ -133,6 +133,29 @@ class AssetRow(Base):
     tradable: Mapped[bool] = mapped_column(Boolean)
 
 
+class AlertRow(Base):
+    """A price / indicator alert, evaluated by the background scheduler."""
+
+    __tablename__ = "alerts"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String, index=True)
+    kind: Mapped[str] = mapped_column(String)  # above | below | crosses | change_above | change_below | expression
+    value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    expression: Mapped[str | None] = mapped_column(Text, nullable=True)
+    interval: Mapped[str] = mapped_column(String, default="1d")
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="active", index=True)  # active | triggered | paused
+    repeat: Mapped[bool] = mapped_column(Boolean, default=False)
+    annotation_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    author: Mapped[str] = mapped_column(String, default="user")
+    last_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_checked: Mapped[datetime | None] = mapped_column(nullable=True)
+    triggered_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    trigger_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trigger_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+
+
 class StateRow(Base):
     __tablename__ = "app_state"
     key: Mapped[str] = mapped_column(String, primary_key=True)

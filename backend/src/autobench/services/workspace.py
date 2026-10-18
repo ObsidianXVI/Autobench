@@ -166,3 +166,62 @@ def delete_watchlist(name: str) -> dict:
         s.delete(r)
     bus.publish("watchlist.deleted", {"name": name})
     return {"deleted": name}
+
+
+# --- workbench layouts & UI state ----------------------------------------------------------
+# Opaque JSON owned by the web UI (chart grid, per-chart symbol/interval/indicators/style,
+# panel sizes, active page). Stored server-side so it survives reloads and follows the user
+# across browsers; the agent can read and switch layouts too.
+
+_MAX_LAYOUT_BYTES = 256_000
+
+
+def _check_size(data: dict) -> None:
+    import json
+
+    if len(json.dumps(data)) > _MAX_LAYOUT_BYTES:
+        raise ValueError("layout is too large")
+
+
+def list_layouts() -> list[dict]:
+    items = (db.state_get("layouts", {"items": {}}) or {"items": {}})["items"]
+    return [{"name": k, "updated_at": v.get("updated_at"), "summary": v.get("summary")} for k, v in sorted(items.items())]
+
+
+def get_layout(name: str) -> dict:
+    items = (db.state_get("layouts", {"items": {}}) or {"items": {}})["items"]
+    if name not in items:
+        raise KeyError(f"No layout named '{name}'")
+    return {"name": name, **items[name]}
+
+
+def save_layout(name: str, data: dict, summary: str | None = None, author: str = "user") -> dict:
+    name = name.strip()
+    if not name or len(name) > 60:
+        raise ValueError("layout name must be 1-60 characters")
+    _check_size(data)
+    store = db.state_get("layouts", {"items": {}}) or {"items": {}}
+    store["items"][name] = {"data": data, "summary": summary, "updated_at": utcnow().isoformat() + "Z", "author": author}
+    db.state_set("layouts", store)
+    bus.publish("layouts.updated", {"name": name, "author": author})
+    return {"name": name, **store["items"][name]}
+
+
+def delete_layout(name: str) -> dict:
+    store = db.state_get("layouts", {"items": {}}) or {"items": {}}
+    if name not in store["items"]:
+        raise KeyError(f"No layout named '{name}'")
+    del store["items"][name]
+    db.state_set("layouts", store)
+    bus.publish("layouts.updated", {"name": name, "deleted": True})
+    return {"deleted": name}
+
+
+def get_ui_state() -> dict:
+    return db.state_get("ui_state", {}) or {}
+
+
+def set_ui_state(data: dict) -> dict:
+    _check_size(data)
+    db.state_set("ui_state", data)
+    return {"ok": True}

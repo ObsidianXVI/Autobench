@@ -178,3 +178,37 @@ def test_snapshots_batch_skips_unknown_and_chunks(provider):
     assert len(out) == 250 and "NOPE" not in out
     assert len(route.calls) == 2  # 200 + 51 symbols
     assert out["S000"]["previous_close"] == 9.0
+
+
+@respx.mock
+def test_concurrent_recent_403s_all_retry_delayed_and_keep_sip(provider):
+    """Several threads hit the first 403 at once; none may demote the provider to IEX."""
+    import threading
+
+    from autobench.timeutil import now_ts
+
+    barrier = threading.Barrier(6)
+
+    def handler(request):
+        if request.url.params["feed"] != "sip":
+            return httpx.Response(200, json={"bars": []})
+        if parse_time(request.url.params["end"]) > now_ts() - 15 * 60:
+            try:
+                barrier.wait(timeout=2)  # make every thread see the 403 before any retries
+            except threading.BrokenBarrierError:
+                pass
+            return httpx.Response(403, json={"message": "subscription does not permit querying recent SIP data"})
+        return httpx.Response(200, json={"bars": [bar("2025-03-03T05:00:00Z", 10)]})
+
+    respx.get(url__regex=rf"{DATA}/v2/stocks/\w+/bars").mock(side_effect=handler)
+    results = []
+
+    def run(sym):
+        results.append(len(provider.fetch_bars(sym, get_interval("1d"), now_ts() - 10 * 86400, now_ts())))
+
+    threads = [threading.Thread(target=run, args=(s,)) for s in ["A", "B", "C", "D", "E", "F"]]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results == [1] * 6 and provider.feed == "sip"

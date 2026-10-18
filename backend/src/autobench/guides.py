@@ -20,8 +20,15 @@ Working rules:
   invalidation). Check get_track_record periodically and learn from misses.
 - Save durable findings (thesis, catalysts, key dates, data quirks) with save_note; read
   search_notes(symbol) before re-analysing a name.
+- For idea generation use screen_stocks (FinViz-style screener over ~6,000 US stocks: valuation,
+  growth, margins, performance, technicals) and get_market_breadth; then verify finalists with the
+  single-name tools. Macro backdrop: get_macro_dashboard (FRED/Treasury/BLS), get_cross_asset_board,
+  get_economic_calendar; earnings dates: get_earnings_calendar.
+- Alerts (create_alert) notify the user live; use them for entry/stop levels of a recorded plan.
+- show_in_ui(page=...) switches the user's screen (chart, screener with your filters, heatmap,
+  markets, calendar) so they can see what you are describing.
 - Recommendations are research output, not financial advice; state key risks and uncertainty.
-Guides: get_guide("workflow" | "expressions" | "annotations" | "interpretation").
+Guides: get_guide("workflow" | "expressions" | "annotations" | "interpretation" | "screener").
 """
 
 EXPRESSIONS = """\
@@ -101,4 +108,43 @@ Interpretation notes:
 - Data caveats: Yahoo fundamentals can lag or be wrong; cross-check important figures against SEC filings.
 """
 
-GUIDES = {"workflow": WORKFLOW, "expressions": EXPRESSIONS, "annotations": ANNOTATIONS, "interpretation": INTERPRETATION}
+def _screener_guide() -> str:
+    from .services.screener import FIELDS, SIGNALS, VIEWS
+
+    groups: dict[str, list[str]] = {}
+    for f in FIELDS:
+        groups.setdefault(f.group, []).append(f"{f.key}" + (f" ({f.desc})" if f.desc else ""))
+    lines = ["Screener (screen_stocks) over every US-listed common stock (~6,000; S&P 500 via universe='sp500').",
+             "", "Fields by group (units: pct fields are percent numbers, e.g. 12.5 = 12.5%; market_cap in $):"]
+    for g, keys in groups.items():
+        lines.append(f"  {g}: " + "; ".join(keys))
+    lines += [
+        "", "Filters: [{field, op, value}] with op in < <= > >= == != between(value=[lo,hi]) in(value=[...]) contains isnull notnull.",
+        "Expression (combined with filters by AND): python-like, field names only, e.g.",
+        "  pe < 20 and sales_qoq > 15 and roe > 15 and sector in [\"Information Technology\", \"Health Care\"]",
+        "  sma50_pct > 0 and sma200_pct > 0 and from_high_52w > -5 and rel_volume > 1.5",
+        "  abs(gap_pct) > 4 and avg_volume > 500000",
+        "Signals (preset scans): " + ", ".join(f"{k} ({v[0]})" for k, v in SIGNALS.items()),
+        "Sort: field name, '-' prefix for descending (default -market_cap). Views (column sets): " + ", ".join(VIEWS),
+        "",
+        "Data notes: fundamentals are TTM from SEC XBRL filings (latest annual + quarters since, minus the same",
+        "quarters a year earlier); 'Q/Q' growth = latest quarter vs the same quarter a year earlier. Prices are live",
+        "(Alpaca) when markets are open; technicals use daily bars through the last session. Companies without",
+        "recent XBRL filings (new registrants, many foreign issuers) have empty fundamentals – screens that filter",
+        "on them exclude those names, so say so when it matters.",
+    ]
+    return "\n".join(lines)
+
+
+class _Guides(dict):
+    def __missing__(self, key):
+        if key == "screener":
+            return _screener_guide()
+        raise KeyError(key)
+
+    def __contains__(self, key):
+        return key == "screener" or dict.__contains__(self, key)
+
+
+GUIDES = _Guides({"workflow": WORKFLOW, "expressions": EXPRESSIONS, "annotations": ANNOTATIONS,
+                  "interpretation": INTERPRETATION})

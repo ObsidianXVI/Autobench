@@ -19,7 +19,9 @@ from .schemas import AnalysisIn, AnnotationIn, AnnotationPatch, ChartView, NoteI
 from .services import analyses, annotations, backtest, filings, fundamentals, levels, market, market_context
 from .services import news as news_svc
 from .services import options as options_svc
-from .services import patterns, risk, technicals, workspace
+from .services import alerts as alerts_svc
+from .services import macro, patterns, risk, screener, technicals, workspace
+from .services.events import bus
 from .services import indicators as ind
 from .services.expressions import evaluate
 from .timeutil import format_ts, get_interval
@@ -744,9 +746,189 @@ def scan_watchlist(name: str = "default", interval: IntervalArg = "1d",
     return {"watchlist": name, "interval": interval, "ranked": rows, "errors": errors}
 
 
+# ===================================================================================== screener, macro, alerts
+
+
 @tool()
-def get_guide(topic: Literal["workflow", "expressions", "annotations", "interpretation"]) -> Any:
-    """Reference: research workflow, expression language, drawing types/conventions, interpretation notes."""
+def screen_stocks(
+    filters: Annotated[list[dict] | None, Field(description="[{field, op, value}], e.g. {'field':'pe','op':'<','value':20}. "
+                                                              "Fields: get_guide('screener')")] = None,
+    expression: Annotated[str | None, Field(description="Filter expression, e.g. 'roe > 15 and sales_qoq > 20 and pe < 30'")] = None,
+    signal: Annotated[str | None, Field(description="Preset scan: top_gainers, top_losers, new_high, new_low, most_active, "
+                                                    "unusual_volume, overbought, oversold, gap_up, gap_down, golden_trend, below_200")] = None,
+    universe: Annotated[str, Field(description="'all' (~6,000 US stocks), 'sp500', or 'watchlist:<name>'")] = "all",
+    sort: Annotated[str | None, Field(description="Field to sort by; prefix '-' for descending (default -market_cap)")] = None,
+    columns: Annotated[list[str] | None, Field(description="Fields to return (default: a compact research set)")] = None,
+    limit: Annotated[int, Field(ge=1, le=200)] = 25,
+) -> Any:
+    """FinViz-style stock screener over the whole US market: descriptive, valuation, financial, performance and
+    technical fields (see get_guide('screener')). Use it for idea generation and relative comparisons, then verify
+    finalists with the single-name tools. Returns total matches and the top rows."""
+    cols = columns or ["symbol", "name", "sector", "market_cap", "price", "change_pct", "pe", "ps", "sales_qoq",
+                       "eps_growth", "net_margin", "roe", "perf_1m", "perf_ytd", "rsi14", "sma200_pct",
+                       "from_high_52w", "rel_volume"]
+    res = screener.screen(filters, expression, signal, universe, sort, cols, None, 0, limit)
+    if res.get("building") and not res["rows"]:
+        return {"note": "The market universe is still being built (first run downloads ~6,000 symbols); retry in a minute.",
+                "status": res["status"]}
+    return {"total": res["total"], "sort": res.get("sort"), "rows": res["rows"]}
+
+
+@tool()
+def get_stock_snapshot(symbol: Symbol) -> Any:
+    """Every screener field for one stock in one call (valuation, margins, growth, performance, technicals,
+    52-week range, volume) – a FinViz-style quote table, handy for quick comparisons."""
+    return screener.snapshot(symbol)
+
+
+@tool()
+def get_market_breadth(universe: Annotated[str, Field(description="'all' or 'sp500'")] = "all") -> Any:
+    """Market internals: advancers/decliners, up/down volume, new 52-week highs/lows, % of stocks above their
+    20/50/200-day averages, overbought/oversold counts, cap-weighted sector performance (1d…1y), and the top
+    names for each signal (gainers, losers, new highs, unusual volume, gaps …)."""
+    b = screener.breadth(universe)
+    b.pop("status", None)
+    return b
+
+
+@tool()
+def get_sector_performance(
+    period: Annotated[Literal["1d", "1w", "1m", "3m", "6m", "ytd", "1y"], Field(description="Return period")] = "1d",
+    universe: Annotated[str, Field(description="'sp500' (GICS) or 'all'")] = "sp500",
+    top_stocks: Annotated[int, Field(ge=0, le=10)] = 3,
+) -> Any:
+    """Heatmap data summarised: cap-weighted return per sector and industry for the period, with the largest
+    names in each industry. Shows where money is rotating."""
+    hm = screener.heatmap(universe, period)
+    out = []
+    for sec in hm.get("sectors", []):
+        inds = []
+        for ind in sec["industries"]:
+            vals = [(x["value"], x["market_cap"]) for x in ind["stocks"] if x["value"] is not None]
+            w = sum(m for _, m in vals)
+            inds.append({"industry": ind["name"], "market_cap": ind["market_cap"],
+                         "return_pct": round(sum(v * m for v, m in vals) / w, 2) if w else None,
+                         "top": [{"symbol": x["symbol"], "return_pct": x["value"]} for x in ind["stocks"][:top_stocks]]})
+        out.append({"sector": sec["name"], "return_pct": sec["value"], "market_cap": sec["market_cap"], "industries": inds})
+    return {"period": period, "universe": universe, "sectors": out}
+
+
+@tool()
+def get_macro_dashboard() -> Any:
+    """US macro backdrop: policy rate, Treasury yields and curve spreads, real yields, breakevens, CPI/core CPI/core
+    PCE, unemployment, payrolls, claims, GDP, industrial production, retail sales, sentiment, housing, credit
+    spreads, financial conditions, Fed balance sheet, M2, dollar. Each with latest value, prior, change and 1y-ago;
+    plus the yield curve now / 1m / 1y ago."""
+    d = macro.macro_dashboard()
+    for g in d["groups"]:
+        for i in g["indicators"]:
+            i.pop("spark", None)
+    return d
+
+
+@tool()
+def get_macro_series(series_id: Annotated[str, Field(description="FRED id, e.g. UNRATE, CPIAUCSL, DGS10, T10Y2Y")],
+                     start: Annotated[str | None, Field(description="YYYY-MM-DD")] = None) -> Any:
+    """History of one macro series (dashboard indicators come transformed, e.g. CPI as % y/y)."""
+    d = macro.macro_series(series_id, start)
+    pts = d["points"]
+    if len(pts) > 400:
+        pts = pts[:: len(pts) // 400 + 1] + [pts[-1]]
+    d["points"] = [{"date": format_ts(p["time"], False), "value": p["value"]} for p in pts]
+    return d
+
+
+@tool()
+def get_cross_asset_board(
+    groups: Annotated[list[str] | None, Field(description="Subset of: US indices, Futures, Rates, Currencies, Crypto, "
+                                                          "Global, Sectors, Factors, Bonds & credit")] = None) -> Any:
+    """Cross-asset dashboard: last, daily change, 1w/1m/3m/YTD/1y returns for indices, futures (equity, energy,
+    metals, grains), yields, FX, crypto, global indices, sector ETFs, factor ETFs and bond/credit ETFs."""
+    b = macro.markets_board(groups)
+    for g in b["groups"]:
+        for i in g["items"]:
+            i.pop("spark", None)
+    return b
+
+
+@tool()
+def get_earnings_calendar(
+    days: Annotated[int, Field(ge=1, le=31)] = 7,
+    universe: Annotated[str, Field(description="'all', 'sp500' or 'watchlist:<name>'")] = "sp500",
+    symbols: Annotated[list[str] | None, Field(description="Only these symbols")] = None,
+    start: Annotated[str | None, Field(description="YYYY-MM-DD (default today)")] = None,
+) -> Any:
+    """Upcoming earnings reports (date, before/after market, EPS forecast, # estimates, last year's EPS) with
+    sector and market cap. Check it before recommending positions that would be held through a report."""
+    return macro.earnings_calendar(days, start, universe, symbols)
+
+
+@tool()
+def get_economic_calendar(days: Annotated[int, Field(ge=1, le=31)] = 7, start: str | None = None,
+                          country: Annotated[str | None, Field(description="Default United States; null for all")] = "United States") -> Any:
+    """Scheduled economic releases (time GMT, consensus, previous, actual once released): CPI, payrolls, FOMC,
+    GDP, PMIs, auctions …"""
+    return macro.economic_calendar(days, start, country)
+
+
+@tool()
+def create_alert(
+    symbol: Symbol,
+    kind: Annotated[Literal["above", "below", "crosses", "change_above", "change_below", "expression"],
+                    Field(description="above/below/crosses a price; change_above/below today's % change; "
+                                      "expression = indicator condition")],
+    value: Annotated[float | None, Field(description="Price level, or % for change alerts")] = None,
+    expression: Annotated[str | None, Field(description="For kind=expression, e.g. crosses_above(close, sma(50))")] = None,
+    interval: IntervalArg = "1d",
+    message: Annotated[str | None, Field(description="What the user should do/know when it fires")] = None,
+    repeat: bool = False,
+) -> Any:
+    """Create an alert the user is notified about live in the web UI (e.g. entry zone reached, stop hit,
+    breakout confirmed). Checked every ~20s for prices, every 5 min for indicator conditions."""
+    return alerts_svc.create(symbol, kind, value, expression, interval, message, repeat, author=AUTHOR)
+
+
+@tool()
+def list_alerts(symbol: str | None = None,
+                status: Annotated[Literal["active", "triggered", "paused"] | None, Field()] = None) -> Any:
+    """Alerts with their status, last check and trigger details."""
+    return alerts_svc.list_(symbol, status)
+
+
+@tool()
+def delete_alert(alert_id: str) -> Any:
+    """Delete an alert by id (ids come from list_alerts or create_alert)."""
+    return alerts_svc.delete(alert_id)
+
+
+@tool()
+def save_screen(name: str,
+                filters: list[dict] | None = None, expression: str | None = None, signal: str | None = None,
+                universe: str = "all", sort: str | None = None,
+                view: Annotated[str, Field(description="overview | valuation | financial | performance | technical")] = "overview") -> Any:
+    """Save a screen so the user can open it from the Screener page (and re-run it later)."""
+    return screener.save_screen(name, {"filters": filters or [], "expression": expression, "signal": signal,
+                                       "universe": universe, "sort": sort, "view": view})
+
+
+@tool()
+def show_in_ui(
+    page: Annotated[Literal["chart", "screener", "heatmap", "markets", "calendar"], Field(description="Page to open")],
+    symbol: Annotated[str | None, Field(description="For page=chart")] = None,
+    screen: Annotated[dict | None, Field(description="For page=screener: {filters, expression, signal, universe, sort, view}")] = None,
+    period: Annotated[str | None, Field(description="For page=heatmap: 1d 1w 1m 3m 6m ytd 1y")] = None,
+) -> Any:
+    """Switch the user's web UI to a page so they see what you are discussing (e.g. the screener with your
+    filters applied, or the sector heatmap). Use set_chart_view for chart symbol/interval/indicators."""
+    payload = {"page": page, "symbol": symbol.upper() if symbol else None, "screen": screen, "period": period}
+    bus.publish("ui.navigate", payload)
+    return {"ok": True, **payload}
+
+
+@tool()
+def get_guide(topic: Literal["workflow", "expressions", "annotations", "interpretation", "screener"]) -> Any:
+    """Reference: research workflow, expression language, drawing types/conventions, interpretation notes,
+    screener fields and syntax."""
     return {"topic": topic, "text": guides.GUIDES[topic]}
 
 
@@ -787,7 +969,7 @@ def compare_stocks(symbols: str) -> str:
 
 @mcp.resource("autobench://guide/{topic}")
 def guide_resource(topic: str) -> str:
-    """Autobench guides: workflow, expressions, annotations, interpretation."""
+    """Autobench guides: workflow, expressions, annotations, interpretation, screener."""
     if topic not in guides.GUIDES:
         raise ValueError(f"Unknown guide '{topic}'")
     return guides.GUIDES[topic]

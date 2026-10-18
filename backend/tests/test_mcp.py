@@ -129,3 +129,40 @@ async def test_guides_and_resource():
         assert "crosses_above" in g["text"]
         res = await c.read_resource("autobench://guide/annotations")
         assert "long_position" in res.contents[0].text
+
+
+async def test_screener_macro_alert_and_ui_tools():
+    from autobench.services.events import bus
+
+    async with Client(mcp) as c:
+        err, s = await call(c, "screen_stocks", {"expression": "market_cap > 0", "sort": "-market_cap", "limit": 3})
+        if s.get("note"):  # universe still building on first call: wait for it, then retry
+            from autobench.services.universe import universe
+
+            universe.ensure(wait=True)
+            err, s = await call(c, "screen_stocks", {"expression": "market_cap > 0", "sort": "-market_cap", "limit": 3})
+        assert not err and s["total"] == 10 and len(s["rows"]) == 3
+        caps = [r["market_cap"] for r in s["rows"]]
+        assert caps == sorted(caps, reverse=True)
+        err, bad = await call(c, "screen_stocks", {"expression": "nosuch > 1"})
+        assert err and "Unknown field" in bad
+        err, snap = await call(c, "get_stock_snapshot", {"symbol": "NVDA"})
+        assert not err and snap["symbol"] == "NVDA" and "pe" in snap
+        err, b = await call(c, "get_market_breadth", {})
+        assert not err and b["count"] == 10 and "status" not in b
+        err, sp = await call(c, "get_sector_performance", {"period": "1m", "universe": "all"})
+        assert not err and sp["sectors"][0]["industries"][0]["top"]
+        err, m = await call(c, "get_macro_dashboard", {})
+        assert not err and m["curve"] and "spark" not in m["groups"][0]["indicators"][0]
+        err, g = await call(c, "get_guide", {"topic": "screener"})
+        assert not err and "sales_qoq" in g["text"]
+        err, a = await call(c, "create_alert", {"symbol": "AAPL", "kind": "above", "value": 1e9, "message": "moon"})
+        assert not err and a["author"] == "agent" and a["description"].startswith("AAPL ≥")
+        err, lst = await call(c, "list_alerts", {"status": "active"})
+        assert [x["id"] for x in lst] == [a["id"]]
+        err, nav = await call(c, "show_in_ui", {"page": "screener", "screen": {"signal": "top_gainers"}})
+        assert not err and nav["page"] == "screener"
+        msg = bus.history[-1]
+        assert msg["type"] == "ui.navigate" and msg["data"]["screen"]["signal"] == "top_gainers"
+        err, sv = await call(c, "save_screen", {"name": "agent picks", "expression": "pe < 30", "view": "valuation"})
+        assert not err and sv["name"] == "agent picks"

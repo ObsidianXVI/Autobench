@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 os.environ["AUTOBENCH_BAR_PROVIDER"] = "fake"
+os.environ["AUTOBENCH_BACKGROUND"] = "0"  # no scheduler thread in unit tests
 os.environ.pop("ALPACA_API_KEY_ID", None)
 os.environ.pop("ALPACA_API_KEY", None)
 

@@ -5,6 +5,7 @@ Also used for index symbols (^VIX, ^TNX, ...) that Alpaca does not carry."""
 from __future__ import annotations
 
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 
 import pandas as pd
@@ -24,8 +25,8 @@ _CHUNK = {"1m": 7 * 86400}
 
 
 def yahoo_symbol(symbol: str) -> str:
-    # Class shares: BRK.B (Alpaca/common) -> BRK-B (Yahoo)
-    return symbol.replace(".", "-") if "." in symbol and not symbol.startswith("^") else symbol
+    # Class shares: BRK.B (Alpaca/common) -> BRK-B (Yahoo); exchange suffixes (000001.SS, DX-Y.NYB) stay
+    return re.sub(r"^([A-Z]+)\.([A-Z])$", r"\1-\2", symbol)
 
 
 class YahooProvider:

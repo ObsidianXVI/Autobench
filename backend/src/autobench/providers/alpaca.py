@@ -83,16 +83,20 @@ class AlpacaProvider:
             if end_key is None:
                 return self._get_realtime(url, params)
             p = dict(params, feed="sip")
-            if self._sip_recent_blocked:
-                p[end_key] = to_rfc3339(min(_ts_from_param(p.get(end_key)), now_ts() - SIP_DELAY))
+            delayed_end = to_rfc3339(min(_ts_from_param(p.get(end_key)), now_ts() - SIP_DELAY))
+            clamped = self._sip_recent_blocked
+            if clamped:
+                p[end_key] = delayed_end
             try:
                 return self._get(url, p), "sip"
             except AlpacaHTTPError as e:
                 if e.status != 403:
                     raise
-                if not self._sip_recent_blocked:
+                # decide per request (not from the shared flag): concurrent requests may all get the
+                # first 403, and each must still try the delayed end before giving up on SIP
+                if not clamped:
                     self._sip_recent_blocked = True
-                    p[end_key] = to_rfc3339(min(_ts_from_param(p.get(end_key)), now_ts() - SIP_DELAY))
+                    p[end_key] = delayed_end
                     try:
                         return self._get(url, p), "sip"
                     except AlpacaHTTPError as e2:
@@ -160,8 +164,9 @@ class AlpacaProvider:
     def quote(self, symbol: str) -> dict:
         return self.snapshots([symbol], strict=True)[symbol.upper()]
 
-    def snapshots(self, symbols: list[str], strict: bool = False) -> dict[str, dict]:
-        """Quotes for many symbols (batched). Unknown symbols are omitted unless `strict`."""
+    def snapshots(self, symbols: list[str], strict: bool = False, consolidated: bool = True) -> dict[str, dict]:
+        """Quotes for many symbols (batched). Unknown symbols are omitted unless `strict`.
+        `consolidated=False` skips the consolidated-volume lookup (for bulk universe prices)."""
         syms = sorted({s.upper() for s in symbols if s})
         snaps: dict[str, dict] = {}
         feed = self._feed
@@ -176,14 +181,15 @@ class AlpacaProvider:
                     snaps.update({k: v for k, v in data.items() if v})
             except AlpacaHTTPError as e:
                 raise ProviderError(f"Alpaca snapshot failed for {','.join(chunk[:5])}: {e}") from e
-        consolidated = self.consolidated_daily(list(snaps)) if feed == "iex" and self._feed == "sip" else {}
+        consolidated = (self.consolidated_daily(list(snaps))
+                        if consolidated and feed == "iex" and self._feed == "sip" else {})
         out: dict[str, dict] = {}
         for sym, snap in snaps.items():
             trade = snap.get("latestTrade") or {}
             q = snap.get("latestQuote") or {}
             day = dict(snap.get("dailyBar") or {})
             prev = dict(snap.get("prevDailyBar") or {})
-            cons = consolidated.get(sym)
+            cons = consolidated.get(sym) if consolidated else None
             volume_feed = feed
             if cons:
                 today, before = cons

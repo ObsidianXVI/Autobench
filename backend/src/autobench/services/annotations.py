@@ -98,7 +98,22 @@ def update(annotation_id: str, patch: AnnotationPatch) -> dict:
         s.flush()
         d = to_dict(r)
     bus.publish("annotation.updated", d)
+    if patch.points is not None and d["type"] in ("horizontal_line", "horizontal_ray") and d["points"]:
+        _move_linked_alerts(annotation_id, d["points"][0].get("price"))
     return d
+
+
+def _move_linked_alerts(annotation_id: str, price: float | None) -> None:
+    """A line alert follows its drawing when the line is dragged."""
+    from ..db import AlertRow
+    from . import alerts
+
+    if price is None:
+        return
+    with session_scope() as s:
+        ids = [r.id for r in s.scalars(select(AlertRow).where(AlertRow.annotation_id == annotation_id))]
+    for alert_id in ids:
+        alerts.update(alert_id, {"value": price})
 
 
 def delete_(ids: list[str] | None = None, symbol: str | None = None, tag: str | None = None,
@@ -119,6 +134,9 @@ def delete_(ids: list[str] | None = None, symbol: str | None = None, tag: str | 
         gone = [(r.id, r.symbol) for r in rows]
         if gone:
             s.execute(delete(AnnotationRow).where(AnnotationRow.id.in_([g[0] for g in gone])))
+    from . import alerts
+
     for aid, sym in gone:
+        alerts.delete_for_annotation(aid)
         bus.publish("annotation.deleted", {"id": aid, "symbol": sym})
     return {"deleted": len(gone), "ids": [g[0] for g in gone]}
