@@ -699,7 +699,7 @@ def save_note(title: str, content: Annotated[str, Field(description="Markdown")]
 def search_notes(symbol: str | None = None, tag: str | None = None,
                  query: Annotated[str | None, Field(description="Text to find in title/content")] = None,
                  limit: Annotated[int, Field(ge=1, le=100)] = 20) -> Any:
-    """Find saved notes."""
+    """Search your saved research notes by symbol, tag or text (read before re-analysing a name)."""
     return workspace.list_notes(symbol, tag, query, limit)
 
 

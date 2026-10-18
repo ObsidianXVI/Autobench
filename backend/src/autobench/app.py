@@ -29,6 +29,50 @@ from .timeutil import get_interval, resolve_range
 log = logging.getLogger(__name__)
 
 
+# --- request bodies (module level so FastAPI can resolve the annotations) ---
+
+
+class IndicatorItem(BaseModel):
+    name: str
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class IndicatorQuery(BaseModel):
+    interval: str = "1d"
+    lookback: str | None = None
+    start: str | None = None
+    end: str | None = None
+    indicators: list[IndicatorItem]
+
+
+class BacktestBody(BaseModel):
+    symbol: str
+    entry: str
+    exit: str | None = None
+    interval: str = "1d"
+    lookback: str = "5y"
+    side: str = "long"
+    stop_loss_pct: float | None = None
+    take_profit_pct: float | None = None
+    stop_atr: float | None = None
+    target_atr: float | None = None
+    max_hold_bars: int | None = None
+
+
+class StudyBody(BaseModel):
+    symbol: str
+    condition: str
+    interval: str = "1d"
+    lookback: str = "10y"
+    horizons: list[int] = [5, 10, 20]
+
+
+class WatchlistPatch(BaseModel):
+    add: list[str] | None = None
+    remove: list[str] | None = None
+    replace: list[str] | None = None
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     db.init_db()
@@ -79,17 +123,6 @@ def create_app() -> FastAPI:
     @app.get("/api/indicators")
     def indicator_list():
         return ind.list_indicators()
-
-    class IndicatorItem(BaseModel):
-        name: str
-        params: dict[str, Any] = Field(default_factory=dict)
-
-    class IndicatorQuery(BaseModel):
-        interval: str = "1d"
-        lookback: str | None = None
-        start: str | None = None
-        end: str | None = None
-        indicators: list[IndicatorItem]
 
     @app.post("/api/indicators/{symbol}")
     def compute_indicators(symbol: str, q: IndicatorQuery):
@@ -149,29 +182,9 @@ def create_app() -> FastAPI:
 
     # --- quant ----------------------------------------------------------------------------
 
-    class BacktestBody(BaseModel):
-        symbol: str
-        entry: str
-        exit: str | None = None
-        interval: str = "1d"
-        lookback: str = "5y"
-        side: str = "long"
-        stop_loss_pct: float | None = None
-        take_profit_pct: float | None = None
-        stop_atr: float | None = None
-        target_atr: float | None = None
-        max_hold_bars: int | None = None
-
     @app.post("/api/backtest")
     def run_bt(b: BacktestBody):
         return backtest.run_backtest(**b.model_dump())
-
-    class StudyBody(BaseModel):
-        symbol: str
-        condition: str
-        interval: str = "1d"
-        lookback: str = "10y"
-        horizons: list[int] = [5, 10, 20]
 
     @app.post("/api/signal-study")
     def run_study(b: StudyBody):
@@ -241,11 +254,6 @@ def create_app() -> FastAPI:
     @app.get("/api/watchlists")
     def wl_list():
         return workspace.list_watchlists()
-
-    class WatchlistPatch(BaseModel):
-        add: list[str] | None = None
-        remove: list[str] | None = None
-        replace: list[str] | None = None
 
     @app.put("/api/watchlists/{name}")
     def wl_update(name: str, p: WatchlistPatch):

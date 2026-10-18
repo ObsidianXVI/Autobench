@@ -184,7 +184,7 @@ def read_filing(url: str, section: str | None = None, offset: int = 0, max_chars
         chosen = next((s for s in secs if s["item"] == code), None)
         if chosen is None:
             raise ValueError(f"Section '{section}' not found. Items found: {', '.join(s['item'] + ' ' + s['title'] for s in secs) or 'none'}")
-        body = text[chosen["start"] : chosen["end"]]
+        body = text[chosen["start"] : chosen["end"]].strip()
     else:
         body = text
     chunk = body[offset : offset + max_chars]

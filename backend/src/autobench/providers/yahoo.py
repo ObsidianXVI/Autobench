@@ -63,7 +63,6 @@ class YahooProvider:
         try:
             raw = yf.Ticker(yahoo_symbol(symbol)).history(
                 start=s_dt, end=e_dt, interval=_YF_INTERVAL[interval.name], auto_adjust=True, actions=False,
-                raise_errors=True,
             )
         except Exception as e:  # yfinance raises a zoo of exception types
             msg = str(e)
