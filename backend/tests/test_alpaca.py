@@ -132,3 +132,49 @@ def test_search_uses_alpaca_asset_directory(monkeypatch, provider):
     res = market.search_symbols("aap")
     assert res[0]["symbol"] == "AAP"  # exact ticker first
     assert {r["symbol"] for r in market.search_symbols("apple")} == {"AAPL", "APLE"}
+
+
+def _snap(price, day_v, prev_c, day="2025-03-04"):
+    return {"latestTrade": {"p": price, "t": f"{day}T15:00:00Z"}, "latestQuote": {"bp": price - 0.1, "ap": price + 0.1},
+            "dailyBar": {"t": f"{day}T05:00:00Z", "o": 100, "h": 102, "l": 99, "c": price, "v": day_v, "vw": 101},
+            "prevDailyBar": {"t": "2025-03-03T05:00:00Z", "c": prev_c}}
+
+
+@respx.mock
+def test_realtime_403_uses_iex_without_demoting_bars(provider):
+    def snap(request):
+        if request.url.params["feed"] == "sip":
+            return httpx.Response(403, json={"message": "subscription does not permit querying recent SIP data"})
+        return httpx.Response(200, json=_snap(101.0, 2_000, 99.5))
+
+    respx.get(f"{DATA}/v2/stocks/AAPL/snapshot").mock(side_effect=snap)
+    # consolidated (SIP) daily bars: today's partial bar and the official previous close
+    multi = respx.get(f"{DATA}/v2/stocks/bars").mock(return_value=httpx.Response(200, json={"bars": {"AAPL": [
+        {"t": "2025-03-03T05:00:00Z", "o": 98, "h": 100, "l": 97, "c": 99.0, "v": 900_000, "vw": 99},
+        {"t": "2025-03-04T05:00:00Z", "o": 100, "h": 101.5, "l": 98.5, "c": 100.8, "v": 750_000, "vw": 100.5},
+    ]}}))
+    q = provider.quote("AAPL")
+    assert q["price"] == 101.0 and q["feed"] == "iex"
+    assert q["volume"] == 750_000 and q["volume_feed"].startswith("sip")  # consolidated, not IEX-only
+    assert q["previous_close"] == 99.0  # official close, not IEX's last print
+    assert q["day_high"] == 101.5 and q["day_low"] == 98.5
+    assert multi.calls[0].request.url.params["feed"] == "sip"
+    assert provider.feed == "sip"  # historical bars stay on the consolidated tape
+
+    respx.get(f"{DATA}/v2/stocks/AAPL/bars").mock(return_value=httpx.Response(200, json={"bars": [bar("2025-03-03T05:00:00Z", 10)]}))
+    provider.fetch_bars("AAPL", get_interval("1d"), parse_time("2025-03-01"), parse_time("2025-03-05"))
+    assert respx.calls[-1].request.url.params["feed"] == "sip"
+
+
+@respx.mock
+def test_snapshots_batch_skips_unknown_and_chunks(provider):
+    def snaps(request):
+        syms = request.url.params["symbols"].split(",")
+        return httpx.Response(200, json={s: _snap(10.0, 5, 9.0) for s in syms if s != "NOPE"})
+
+    route = respx.get(f"{DATA}/v2/stocks/snapshots").mock(side_effect=snaps)
+    syms = [f"S{i:03d}" for i in range(250)] + ["NOPE"]
+    out = provider.snapshots(syms)
+    assert len(out) == 250 and "NOPE" not in out
+    assert len(route.calls) == 2  # 200 + 51 symbols
+    assert out["S000"]["previous_close"] == 9.0

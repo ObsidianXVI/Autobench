@@ -1,8 +1,11 @@
 """Alpaca Market Data API v2 (bars, snapshots, news, screener) + Trading API asset list.
 
 Feed handling: with ALPACA_DATA_FEED=sip (consolidated tape) the free plan rejects requests that
-touch the most recent 15 minutes. On a 403 we retry with the end clamped to 16 minutes ago, and
-if SIP is not permitted at all we fall back to the IEX feed for the rest of the process.
+touch the most recent 15 minutes. Historical requests that get a 403 are retried with the end
+clamped to 16 minutes ago; only if that also fails does the process fall back to IEX. Realtime
+endpoints (snapshots) cannot be delayed, so they fall back to IEX on their own while bars keep
+using SIP. Because IEX carries only a few percent of US volume, quotes combine the realtime IEX
+last trade with the (delayed) consolidated daily bars for volume, day range and previous close.
 Intraday bars are restricted to the regular session (09:30-16:00 ET) to match Yahoo, and 1h bars
 are built from 30-minute bars so they align to 09:30 rather than clock hours.
 """
@@ -44,7 +47,9 @@ class AlpacaProvider:
         self.trading_url = settings.alpaca_trading_base_url.rstrip("/")
         self._feed = settings.alpaca_data_feed.lower()
         self._sip_recent_blocked = False
+        self._sip_realtime_blocked = False
         self._lock = threading.Lock()
+        self._daily_cache: dict[str, tuple[float, dict]] = {}
 
     @property
     def feed(self) -> str:
@@ -73,18 +78,19 @@ class AlpacaProvider:
         raise ProviderError("Alpaca request failed after retries")
 
     def _get_with_feed(self, url: str, params: dict[str, Any], end_key: str | None = "end") -> tuple[Any, str]:
-        """GET with feed fallback. Returns (json, feed_used)."""
-        feed = self._feed
-        if feed == "sip":
+        """GET with feed fallback. Returns (json, feed_used). `end_key=None` marks a realtime endpoint."""
+        if self._feed == "sip":
+            if end_key is None:
+                return self._get_realtime(url, params)
             p = dict(params, feed="sip")
-            if self._sip_recent_blocked and end_key:
+            if self._sip_recent_blocked:
                 p[end_key] = to_rfc3339(min(_ts_from_param(p.get(end_key)), now_ts() - SIP_DELAY))
             try:
                 return self._get(url, p), "sip"
             except AlpacaHTTPError as e:
                 if e.status != 403:
                     raise
-                if end_key and not self._sip_recent_blocked:
+                if not self._sip_recent_blocked:
                     self._sip_recent_blocked = True
                     p[end_key] = to_rfc3339(min(_ts_from_param(p.get(end_key)), now_ts() - SIP_DELAY))
                     try:
@@ -95,6 +101,19 @@ class AlpacaProvider:
                 log.warning("Alpaca SIP feed not permitted (%s); falling back to IEX", e)
                 with self._lock:
                     self._feed = "iex"
+        return self._get(url, dict(params, feed="iex")), "iex"
+
+    def _get_realtime(self, url: str, params: dict[str, Any]) -> tuple[Any, str]:
+        """Realtime endpoint on a SIP account: SIP if the plan allows it, otherwise IEX for this call
+        (and later realtime calls) without affecting historical bars."""
+        if not self._sip_realtime_blocked:
+            try:
+                return self._get(url, dict(params, feed="sip")), "sip"
+            except AlpacaHTTPError as e:
+                if e.status != 403:
+                    raise
+                log.info("Alpaca realtime SIP not permitted; using IEX for snapshots (bars stay on SIP)")
+                self._sip_realtime_blocked = True
         return self._get(url, dict(params, feed="iex")), "iex"
 
     # --- bars ------------------------------------------------------------------------------
@@ -139,32 +158,114 @@ class AlpacaProvider:
     # --- quotes ----------------------------------------------------------------------------
 
     def quote(self, symbol: str) -> dict:
-        url = f"{self.data_url}/v2/stocks/{symbol.upper()}/snapshot"
-        try:
-            snap, feed = self._get_with_feed(url, {}, end_key=None)
-        except AlpacaHTTPError as e:
-            raise ProviderError(f"Alpaca snapshot failed for {symbol}: {e}") from e
-        trade = snap.get("latestTrade") or {}
-        q = snap.get("latestQuote") or {}
-        day = snap.get("dailyBar") or {}
-        prev = snap.get("prevDailyBar") or {}
-        price = trade.get("p") or day.get("c")
-        if price is None:
-            raise ProviderError(f"No quote available for {symbol}")
-        return {
-            "price": float(price),
-            "previous_close": prev.get("c"),
-            "open": day.get("o"),
-            "day_high": day.get("h"),
-            "day_low": day.get("l"),
-            "volume": day.get("v"),
-            "vwap": day.get("vw"),
-            "bid": q.get("bp"),
-            "ask": q.get("ap"),
-            "last_trade_time": trade.get("t"),
-            "source": self.name,
-            "feed": feed,
-        }
+        return self.snapshots([symbol], strict=True)[symbol.upper()]
+
+    def snapshots(self, symbols: list[str], strict: bool = False) -> dict[str, dict]:
+        """Quotes for many symbols (batched). Unknown symbols are omitted unless `strict`."""
+        syms = sorted({s.upper() for s in symbols if s})
+        snaps: dict[str, dict] = {}
+        feed = self._feed
+        for chunk in _chunks(syms, 200):
+            try:
+                if len(chunk) == 1 and strict:
+                    data, feed = self._get_with_feed(f"{self.data_url}/v2/stocks/{chunk[0]}/snapshot", {}, end_key=None)
+                    snaps[chunk[0]] = data
+                else:
+                    data, feed = self._get_with_feed(f"{self.data_url}/v2/stocks/snapshots",
+                                                     {"symbols": ",".join(chunk)}, end_key=None)
+                    snaps.update({k: v for k, v in data.items() if v})
+            except AlpacaHTTPError as e:
+                raise ProviderError(f"Alpaca snapshot failed for {','.join(chunk[:5])}: {e}") from e
+        consolidated = self.consolidated_daily(list(snaps)) if feed == "iex" and self._feed == "sip" else {}
+        out: dict[str, dict] = {}
+        for sym, snap in snaps.items():
+            trade = snap.get("latestTrade") or {}
+            q = snap.get("latestQuote") or {}
+            day = dict(snap.get("dailyBar") or {})
+            prev = dict(snap.get("prevDailyBar") or {})
+            cons = consolidated.get(sym)
+            volume_feed = feed
+            if cons:
+                today, before = cons
+                # the snapshot's day bar belongs to the same session as the consolidated one
+                if today and day.get("t", "")[:10] == today["t"][:10]:
+                    day.update({k: today[k] for k in ("o", "h", "l", "v", "vw") if k in today})
+                    volume_feed = "sip (delayed 16 min)"
+                    if before:
+                        prev = before
+                elif today and day.get("t", "")[:10] > today["t"][:10]:
+                    prev = today  # consolidated data has not reached today's session yet
+            price = trade.get("p") or day.get("c")
+            if price is None:
+                if strict:
+                    raise ProviderError(f"No quote available for {sym}")
+                continue
+            # keep the day range consistent with the realtime last price
+            if day.get("h") is not None:
+                day["h"] = max(day["h"], price)
+            if day.get("l") is not None:
+                day["l"] = min(day["l"], price)
+            out[sym] = {
+                "price": float(price),
+                "previous_close": prev.get("c"),
+                "open": day.get("o"),
+                "day_high": day.get("h"),
+                "day_low": day.get("l"),
+                "volume": day.get("v"),
+                "vwap": day.get("vw"),
+                "bid": q.get("bp"),
+                "ask": q.get("ap"),
+                "last_trade_time": trade.get("t"),
+                "source": self.name,
+                "feed": feed,
+                "volume_feed": volume_feed,
+            }
+        if strict and syms and syms[0] not in out:
+            raise ProviderError(f"No quote available for {syms[0]}")
+        return out
+
+    def consolidated_daily(self, symbols: list[str]) -> dict[str, tuple[dict | None, dict | None]]:
+        """Latest two consolidated (SIP, delayed) daily bars per symbol: (latest, previous). Cached 60s."""
+        now = time.time()
+        out: dict[str, tuple[dict | None, dict | None]] = {}
+        missing = []
+        for s in symbols:
+            hit = self._daily_cache.get(s)
+            if hit and now - hit[0] < 60:
+                out[s] = hit[1]["pair"]
+            else:
+                missing.append(s)
+        if missing:
+            try:
+                bars = self.daily_bars_multi(missing, now_ts() - 10 * 86400, now_ts())
+            except ProviderError as e:
+                log.info("consolidated daily bars unavailable: %s", e)
+                bars = {}
+            for s in missing:
+                rows = bars.get(s) or []
+                pair = (rows[-1] if rows else None, rows[-2] if len(rows) > 1 else None)
+                self._daily_cache[s] = (now, {"pair": pair})
+                out[s] = pair
+        return out
+
+    def daily_bars_multi(self, symbols: list[str], start: int, end: int, timeframe: str = "1Day") -> dict[str, list[dict]]:
+        """Raw daily bars for many symbols (adjusted, paginated). {symbol: [bar, ...]} oldest first."""
+        out: dict[str, list[dict]] = {}
+        for chunk in _chunks(sorted({s.upper() for s in symbols}), 100):
+            params: dict[str, Any] = {
+                "symbols": ",".join(chunk), "timeframe": timeframe, "start": to_rfc3339(start),
+                "end": to_rfc3339(min(end, now_ts())), "limit": 10000, "adjustment": "all", "sort": "asc",
+            }
+            page_token = None
+            for _ in range(1000):
+                p = dict(params, page_token=page_token) if page_token else params
+                data, _ = self._get_with_feed(f"{self.data_url}/v2/stocks/bars", p)
+                for sym, rows in (data.get("bars") or {}).items():
+                    out.setdefault(sym, []).extend(rows)
+                page_token = data.get("next_page_token")
+                if not page_token:
+                    break
+        return out
 
     # --- assets / news / screener ----------------------------------------------------------
 
@@ -233,6 +334,10 @@ def _error_message(r: httpx.Response) -> str:
         return body.get("message") or str(body)
     except Exception:
         return r.text[:200]
+
+
+def _chunks(items: list[str], size: int) -> list[list[str]]:
+    return [items[i:i + size] for i in range(0, len(items), size)]
 
 
 def _ts_from_param(v: Any) -> int:
