@@ -42,7 +42,8 @@ def _load(symbol: str, interval: str, lookback: str, expr_list: list[str]):
     # fetch extra history for indicator warm-up, then remember where the test window starts
     secs = lookback_seconds(lookback)
     if secs is None:
-        return bars, warm
+        # whole history requested: use the first bars as warm-up, but never most of the sample
+        return bars, min(warm, len(bars.df) // 4)
     start = now_ts() - secs
     extra_days = int(warm * 1.5) + 10 if bars.interval.name == "1d" else warm * (7 if bars.interval.name == "1wk" else 31)
     full = get_bars(symbol, interval, start=start - extra_days * 86400)

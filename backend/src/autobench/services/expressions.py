@@ -285,11 +285,16 @@ def evaluate_bool(df: pd.DataFrame, expr: str) -> pd.Series:
 
 
 def max_lookback_hint(expr: str) -> int:
-    """Rough warm-up requirement: the largest integer constant in the expression × 3."""
+    """Rough warm-up requirement: 3x the largest integer argument passed to any function call
+    (thresholds such as `close > 100` are not lookbacks and are ignored)."""
     try:
         tree = ast.parse(expr, mode="eval")
     except SyntaxError:
         return 0
-    nums = [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, (int, float))
-            and not isinstance(n.value, bool)]
+    nums = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            for a in [*node.args, *(k.value for k in node.keywords)]:
+                if isinstance(a, ast.Constant) and isinstance(a.value, int) and not isinstance(a.value, bool):
+                    nums.append(a.value)
     return int(max([v for v in nums if v < 1000] or [0]) * 3)

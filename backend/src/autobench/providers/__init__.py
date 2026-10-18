@@ -56,7 +56,7 @@ def yahoo() -> YahooProvider:
     return _get("yahoo")  # type: ignore[return-value]
 
 
-def alpaca():
+def alpaca_provider():
     """The Alpaca provider, or None when it is not configured."""
     if get_settings().bar_provider == "fake" or not get_settings().alpaca_enabled:
         return None
@@ -68,4 +68,4 @@ def reset_providers() -> None:
         _instances.clear()
 
 
-__all__ = ["BarProvider", "ProviderError", "bar_provider_for", "primary_provider", "yahoo", "alpaca", "reset_providers"]
+__all__ = ["BarProvider", "ProviderError", "bar_provider_for", "primary_provider", "yahoo", "alpaca_provider", "reset_providers"]

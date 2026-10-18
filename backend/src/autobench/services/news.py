@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .. import db
-from ..providers import ProviderError, alpaca, yahoo
+from ..providers import ProviderError, alpaca_provider, yahoo
 from ..timeutil import now_ts
 from .market import normalize_symbol
 
@@ -11,7 +11,7 @@ from .market import normalize_symbol
 def get_news(symbol: str | None = None, limit: int = 15, days: int = 14, include_content: bool = False) -> dict:
     sym = normalize_symbol(symbol) if symbol else None
     limit = max(1, min(limit, 50))
-    a = alpaca()
+    a = alpaca_provider()
     key = f"news:{sym}:{limit}:{days}:{include_content}:{'alpaca' if a else 'yahoo'}"
 
     def fetch():

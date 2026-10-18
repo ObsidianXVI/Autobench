@@ -154,12 +154,12 @@ def evaluate(analysis_id: str, now: datetime | None = None) -> dict:
     return out
 
 
-def track_record(symbol: str | None = None, limit: int = 200) -> dict:
+def track_record(symbol: str | None = None, limit: int = 200, now: datetime | None = None) -> dict:
     rows = list_(symbol, limit=limit)
     evals = []
     for r in rows:
         try:
-            evals.append(evaluate(r["id"]))
+            evals.append(evaluate(r["id"], now=now))
         except Exception as e:
             evals.append({"id": r["id"], "symbol": r["symbol"], "status": "error", "error": str(e)})
     directional = [e for e in evals if DIRECTION.get(e.get("action"), 0) != 0]

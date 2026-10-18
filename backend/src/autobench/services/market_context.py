@@ -7,7 +7,7 @@ import logging
 import numpy as np
 
 from .. import db
-from ..providers import ProviderError, alpaca
+from ..providers import ProviderError, alpaca_provider
 from . import indicators as ind
 from .market import get_bars
 
@@ -102,7 +102,7 @@ def market_overview() -> dict:
 
 
 def movers(top: int = 10) -> dict:
-    a = alpaca()
+    a = alpaca_provider()
     if a is None:
         raise ProviderError("Market movers require Alpaca credentials")
 

@@ -14,7 +14,7 @@ from sqlalchemy import delete, insert, select
 
 from .. import db
 from ..db import AssetRow, BarCoverage, BarRow, session_scope
-from ..providers import ProviderError, alpaca, bar_provider_for, primary_provider, yahoo, yahoo_only_symbol
+from ..providers import ProviderError, alpaca_provider, bar_provider_for, primary_provider, yahoo, yahoo_only_symbol
 from ..providers.base import BAR_COLUMNS, empty_bars
 from ..timeutil import Interval, format_ts, get_interval, now_ts, resolve_range
 
@@ -209,7 +209,8 @@ def aggregate_bars(df: pd.DataFrame, max_bars: int) -> tuple[pd.DataFrame, int]:
     if max_bars <= 0 or n <= max_bars:
         return df, 1
     k = math.ceil(n / max_bars)
-    keys = (np.arange(n)[::-1] // k)[::-1]
+    from_end = (n - 1 - np.arange(n)) // k  # 0 for the newest group
+    keys = from_end.max() - from_end  # ascending in time
     g = df.groupby(keys, sort=True)
     out = pd.DataFrame({
         "o": g["o"].first(), "h": g["h"].max(), "l": g["l"].min(), "c": g["c"].last(), "v": g["v"].sum(),
@@ -266,7 +267,7 @@ _ASSET_REFRESH_SECONDS = 86400
 
 def _ensure_assets() -> bool:
     """Load Alpaca's asset directory into SQLite (daily). Returns False if Alpaca is unavailable."""
-    a = alpaca()
+    a = alpaca_provider()
     if a is None:
         return False
     state = db.state_get("assets_refreshed") or {}
