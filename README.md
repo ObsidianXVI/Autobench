@@ -16,10 +16,23 @@ on your live chart and records recommendations that are later graded against rea
 
 ```bash
 cp .env.example .env            # add ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY
+(cd web && npm install && npm run build)          # build the UI once
 cd backend
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-.venv/bin/autobench serve       # http://127.0.0.1:8000 · MCP: http://127.0.0.1:8000/mcp
+.venv/bin/autobench serve       # UI + API: http://127.0.0.1:8000 · MCP: http://127.0.0.1:8000/mcp
 ```
+
+For UI development, run `npm run dev` in `web/` (http://localhost:5173, which proxies `/api`, `/ws`
+and `/mcp` to the backend; set `AUTOBENCH_BACKEND` to point at a different port).
+
+### Using the chart
+- Search a ticker, pick an interval, and add indicators with **ƒx Indicators**. The indicator set is
+  shared state, so the agent can change it too.
+- Draw with the left toolbar: trend line, ray, horizontal and vertical lines, zone, Fibonacci,
+  measure, arrow, long/short position, and text. Clicks snap to the nearest OHLC price.
+  **Delete** removes the selected drawing and **Esc** cancels.
+- Agent drawings are marked ✦ and colored violet by default. The **Agent** tab shows live activity,
+  saved recommendations with their graded outcomes, and the track record.
 
 Without Alpaca keys, bars and quotes fall back to Yahoo automatically. `AUTOBENCH_BAR_PROVIDER=fake`
 runs on deterministic synthetic data, which needs no network.
