@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "respx>=0.21"]
+ui-test = ["playwright>=1.45"]
 
 [project.scripts]
 autobench = "autobench.__main__:main"
@@ -31,5 +32,8 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["live: hits real market-data APIs (run with -m live)"]
+markers = [
+  "live: hits real market-data APIs (run with -m live)",
+  "ui: drives the compiled web UI in headless Chrome (skipped without Playwright or a UI build)",
+]
 addopts = "-m 'not live'"

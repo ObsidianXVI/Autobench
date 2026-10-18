@@ -298,7 +298,16 @@ def create_app() -> FastAPI:
     # MCP streamable-HTTP endpoint at /mcp
     app.router.routes.extend(mcp_app.routes)
 
-    dist = REPO_DIR / "web" / "dist"
-    if dist.is_dir():
-        app.mount("/", StaticFiles(directory=dist, html=True), name="web")
+    ui = REPO_DIR / "web" / "build"
+    if ui.is_dir():
+        app.mount("/", _UiFiles(directory=ui, html=True), name="web")
     return app
+
+
+class _UiFiles(StaticFiles):
+    """The compiled web UI. Responses are revalidated (ETag) so a rebuild shows up on reload."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response

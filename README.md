@@ -16,14 +16,15 @@ on your live chart and records recommendations that are later graded against rea
 
 ```bash
 cp .env.example .env            # add ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY
-(cd web && npm install && npm run build)          # build the UI once
+(cd web && dart pub get && dart run tool/build.dart)   # build the UI once (needs the Dart SDK)
 cd backend
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/autobench serve       # UI + API: http://127.0.0.1:8000 · MCP: http://127.0.0.1:8000/mcp
 ```
 
-For UI development, run `npm run dev` in `web/` (http://localhost:5173, which proxies `/api`, `/ws`
-and `/mcp` to the backend; set `AUTOBENCH_BACKEND` to point at a different port).
+The web UI is written in Dart and compiled to JavaScript (no npm or Node). Its chart engine is
+part of the codebase, and its only dependency is `package:web`. For UI development, run
+`dart run tool/build.dart --watch` in `web/` and reload the page after each rebuild.
 
 ### Using the chart
 - Search a ticker, pick an interval, and add indicators with **ƒx Indicators**. The indicator set is
@@ -73,6 +74,9 @@ Strategies and conditions use a safe expression language, for example
 cd backend && .venv/bin/python -m pytest -q        # offline suite
 .venv/bin/python -m pytest -q -m live               # real Yahoo / SEC / Alpaca smoke tests
 ```
+
+UI: `cd web && dart run test/core_test.dart` (unit tests). For end-to-end tests in headless Chrome, run
+`pip install -e ".[ui-test]"` and then `pytest -q tests/test_ui_e2e.py`.
 
 The offline suite checks indicators against reference values, verifies the backtester's exact fills
 on hand-built price paths, tests the Alpaca client against mocked HTTP, and covers the API,

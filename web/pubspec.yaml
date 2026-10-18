@@ -1,0 +1,12 @@
+name: autobench_web
+description: Autobench web UI (chart, drawings, agent panels), compiled to JavaScript with dart2js.
+publish_to: none
+version: 0.2.0
+
+environment:
+  sdk: ^3.9.0
+
+# The only dependency: the Dart team's browser API bindings. Everything else, including the
+# chart engine, is in lib/.
+dependencies:
+  web: ^1.1.1

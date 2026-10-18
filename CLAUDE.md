@@ -16,7 +16,7 @@ Agents can draw on the user's live chart; drawings, analyses, notes and watchlis
 ## Layout
 ```
 backend/src/autobench/
-  app.py            FastAPI app: REST /api/*, WebSocket /ws, MCP routes, static web/dist
+  app.py            FastAPI app: REST /api/*, WebSocket /ws, MCP routes, static web/build
   mcp_server.py     MCP tools/prompts/resources (compact JSON results, ToolError messages)
   guides.py         agent-facing reference text (server instructions, get_guide topics)
   schemas.py        pydantic models shared by REST and MCP (annotations, analyses, view, notes)
@@ -26,14 +26,23 @@ backend/src/autobench/
                     levels, patterns, technicals, risk, fundamentals, options, filings (SEC), news,
                     market_context, annotations, analyses (outcome tracking), workspace, events (bus)
 backend/tests/      pytest suite (fake provider, no network); live smoke tests: `pytest -m live`
-web/                React + Vite UI
+web/                Dart web UI compiled to JS with dart2js (only dependency: package:web)
+  lib/src/core/     pure Dart, no browser APIs: models, NY time/DST, scales/ticks, formatting, markdown
+  lib/src/chart/    canvas chart engine (engine.dart), drawings layer (annotations.dart), chart_view.dart
+  lib/src/ui/       app state + components (topbar, toolbar, sidebar), REST client, WebSocket events
+  static/           index.html, styles.css, favicon (copied into build/)
+  tool/build.dart   build script; test/core_test.dart unit tests (plain `dart run`)
 ```
 
 ## Commands
 - Install: `cd backend && python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"`
 - Test: `cd backend && .venv/bin/python -m pytest -q` (offline) · `-m live` hits Yahoo/SEC/Alpaca
 - Run with synthetic data: `AUTOBENCH_BAR_PROVIDER=fake .venv/bin/autobench serve`
-- Web UI dev: `cd web && npm install && npm run dev` (proxies /api, /ws, /mcp to :8000)
+- Web UI: `cd web && dart pub get && dart run tool/build.dart` (release) or `--watch` (rebuilds on change;
+  the backend serves web/build from disk, so reload the page). Unit tests: `dart run test/core_test.dart`.
+- UI end-to-end tests (headless Chrome, fake data, MCP as the agent): `pip install -e ".[ui-test]"`, build the
+  UI, then `pytest -q tests/test_ui_e2e.py`. `window.__autobench` exposes chart hooks for these tests.
+- No npm/Node anywhere: non-Python code is Dart. The web UI's only pub dependency is `package:web`.
 
 ## Conventions
 - Bar frames: index = epoch-second bar start (UTC), columns o,h,l,c,v; daily+ bars stamped 00:00 UTC of the
@@ -44,4 +53,7 @@ web/                React + Vite UI
   return plain dicts (they are serialised compactly), raise `ValueError` for user-fixable input problems.
 - Service functions raise `ValueError` (bad input → 400 / tool error), `KeyError` (not found → 404),
   `ProviderError` (upstream failure → 502).
+- Dart/JS interop gotchas: compiled Dart lists are JS arrays and pass `is Node`/`is JSObject` checks (test
+  iterables first); package:web types `MouseEvent.clientX` as int (read the raw double) and `hidden` as JSAny
+  (use the `isHidden` extension); `toJS` closures must have JS-compatible signatures (no Future returns).
 - Config via `.env` at the repo root (see `.env.example`). Never commit `.env`.
