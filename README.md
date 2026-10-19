@@ -6,7 +6,9 @@ data: a screener over every US-listed stock, a sector heatmap, market breadth, a
 earnings/economic calendars. It also has 41 technical indicators, fundamentals, SEC filings,
 options, news and quantitative testing tools. An MCP server gives an AI agent the same data: it
 can screen the market, draw on your live chart, set alerts and open pages for you. Its
-recommendations are recorded and later graded against real prices.
+recommendations are recorded and later graded against real prices. With Interactive Brokers (or the
+built-in simulator) connected, you trade from the chart and the agent proposes risk-checked orders
+that you approve.
 
 ```
  Alpaca (bars, quotes, snapshots, news)   ─┐
@@ -15,7 +17,8 @@ recommendations are recorded and later graded against real prices.
  SEC EDGAR (filings, XBRL frames)          ├─▶ backend (FastAPI) ──REST/WebSocket──▶ web UI (Dart)
  Nasdaq (listings, calendars) · Wikipedia  │      │  SQLite + universe cache: bars, drawings,
    (S&P 500 GICS) · FRED · Treasury · BLS ─┘      │  alerts, analyses, notes, layouts
-                                                  └──MCP /mcp──▶ AI agent (Claude Code + skills)
+                                                  ├──MCP /mcp──▶ AI agent (Claude Code + skills)
+ IB Gateway / TWS (ib_async) ◀── orders, fills, positions, account ──┘  or the built-in simulator
 ```
 
 ## Quick start
@@ -99,6 +102,47 @@ Alerts are checked every 20 seconds.
 Without Alpaca keys, bars and quotes fall back to Yahoo automatically. `AUTOBENCH_BAR_PROVIDER=fake`
 runs on deterministic synthetic data, which needs no network.
 
+### Trading (Interactive Brokers or the simulator)
+
+1. Start **IB Gateway** (or TWS) and log in to your **paper** account. In *Configure → Settings → API
+   → Settings*: enable socket clients, add `127.0.0.1` to trusted IPs, uncheck *Read-Only API*.
+   Gateway paper listens on 4002 (live 4001; TWS paper 7497, live 7496).
+2. `autobench start`. It connects to `IBKR_HOST:IBKR_PORT` (default `127.0.0.1:4002`) and reconnects on
+   its own when Gateway restarts. Change the broker, port or client id on the **Trading** page
+   (*Connection*), or pick the **Simulator** to try everything without IBKR.
+
+What you get:
+- **Order ticket** (right dock, ⇅): buy/sell, limit / market / stop / stop-limit, sizing by shares,
+  dollar value or risk % to the stop, stop-loss and take-profit (sent as a bracket: both activate when
+  the entry fills and cancel each other), day/GTC, and a live risk check before you send.
+- **On the chart**: the position line (size, average cost, open P&L, × to close), working order lines
+  (drag to change the price, × to cancel, P&L at the stop/target while dragging), the agent's
+  proposals (click to review), ▲/▼ execution markers and entry→exit lines for closed trades with
+  their P&L and R. Right-click for *Trade at price* (buy/sell limit or stop) and position actions
+  (close, close half, add or move the stop, breakeven). A long/short position drawing becomes an
+  order with *Create order from this*.
+- **Trading page**: net liquidation, day/unrealized/realized P&L, cash vs invested vs committed to
+  orders vs free cash, open risk to stops, capital allocation, the equity curve, and tabs for
+  positions, orders, agent proposals, trade history (round trips with R multiples, win rate, profit
+  factor, expectancy), fills, the activity log and the risk limits.
+
+Safety:
+- **Agent orders need your approval** by default. They show up as a toast, a ✦ line on the chart and
+  a card on the Trading page. *Auto* mode sends agent orders that pass the limits straight away, and
+  only on paper accounts.
+- **Risk limits are enforced on the server** for every order, yours and the agent's: max order value,
+  max position % of equity, max risk to the stop, daily loss limit, orders per day, shorting, market
+  entries, extended hours, and symbol allow/block lists. Orders that reduce a position skip the sizing
+  limits so you can always get out.
+- **Kill switch**: *Halt* cancels working entries and pending proposals and blocks new orders (your
+  closing orders still work). *Halt & flatten* also cancels every order and closes all positions.
+- **Live accounts are read-only** unless `AUTOBENCH_ALLOW_LIVE_TRADING=1` is set *and* you arm live
+  trading on the Trading page (typing LIVE), each server session.
+- Leftover stop-loss/take-profit orders are cancelled (or shrunk) when a position is closed (or
+  reduced), so they cannot open an unintended position. Every action is in the activity log.
+- The agent has no tools to approve orders, change limits or the mode, arm live trading or lift a
+  halt. Trading API writes are accepted only from the local UI.
+
 ### Connect an AI agent
 
 - **Claude Code**: open this repo. `.mcp.json` registers the `autobench` server and
@@ -108,7 +152,7 @@ runs on deterministic synthetic data, which needs no network.
 - **stdio-only clients** (e.g. Claude Desktop): command `backend/.venv/bin/autobench`, args `["mcp-stdio"]`.
   Drawings are relayed to a running `autobench serve`, so the chart still updates live.
 
-## What the agent can do (62 MCP tools)
+## What the agent can do (69 MCP tools)
 
 | Area | Tools |
 |---|---|
@@ -121,6 +165,7 @@ runs on deterministic synthetic data, which needs no network.
 | Market-wide | screen_stocks (~6,000 stocks, 70 fields, filters/expressions/signals), get_stock_snapshot, get_market_breadth, get_sector_performance, save_screen |
 | Macro & calendars | get_macro_dashboard (FRED/Treasury/BLS), get_macro_series, get_cross_asset_board, get_earnings_calendar, get_economic_calendar |
 | Alerts & UI | create_alert (price, crossing, daily change, indicator condition), list_alerts, delete_alert, show_in_ui |
+| Trading | get_portfolio, get_trade_history, preview_order, propose_order (bracket orders for your approval), propose_close_position, get_order_tickets, cancel_order |
 | Memory | save_analysis, list_analyses, get_analysis, get_track_record (hit rate, R, alpha, Brier calibration), save_note, search_notes, watchlists, scan_watchlist |
 
 Strategies and conditions use a safe expression language, for example
@@ -129,7 +174,7 @@ Strategies and conditions use a safe expression language, for example
 ## Skills (the research method)
 
 `stock-research` (master workflow) · `technical-analysis` · `quant-validation` · `fundamental-analysis` ·
-`trade-planning` · `chart-annotation` · `earnings-preview` · `market-regime` · `watchlist-screening` ·
+`trade-planning` · `trade-execution` · `chart-annotation` · `earnings-preview` · `market-regime` · `watchlist-screening` ·
 `recommendation-review`
 
 ## Tests

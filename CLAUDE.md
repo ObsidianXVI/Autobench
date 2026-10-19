@@ -8,7 +8,7 @@ Agents can draw on the user's live chart; drawings, analyses, notes and watchlis
 - Start the server: `cd backend && .venv/bin/autobench serve` (http://127.0.0.1:8000, MCP at `/mcp`).
   `.mcp.json` registers it for Claude Code as `autobench`.
 - Skills in `.claude/skills/` define the research method: start with `stock-research`; it delegates to
-  `technical-analysis`, `quant-validation`, `fundamental-analysis`, `trade-planning`, `chart-annotation`,
+  `technical-analysis`, `quant-validation`, `fundamental-analysis`, `trade-planning`, `trade-execution`, `chart-annotation`,
   `earnings-preview`, `market-regime`, `watchlist-screening`, `recommendation-review`.
 - Rule of the house: no edge without a test (`run_signal_study` / `run_backtest`), record every call with
   `save_analysis`, keep durable findings in `save_note`.
@@ -73,4 +73,12 @@ web/                Dart web UI compiled to JS with dart2js (only dependency: pa
   `/api/chart-config/{symbol}`; the model and pane assignment are in `web/lib/src/core/layers.dart`.
   Drawings carry `layer` (NULL = main; agent drawings default to `agent`). UI prefs/state: `/api/ui-state`
   (v3, `savedAt`), mirrored to localStorage; `store.flush()` beacons on pagehide.
+- Trading: `services/trading.py` (risk checks, tickets, approvals, kill switch, fills → round trips, equity)
+  over `services/broker/` (`ibkr.py`: ib_async on a private event-loop thread, every call marshalled onto it;
+  `sim.py`: simulator). Order refs are `ab:<ticket>:<role>` (entry | stop_loss | take_profit | exit).
+  Broker callbacks run on the broker thread: never call the broker from them (use `trading._worker`).
+  Only `autobench serve` connects (`trading.enabled_here` is False in mcp-stdio). Tests use
+  `AUTOBENCH_BROKER=sim` (conftest) — never point tests at a real Gateway. Trading writes require the
+  `X-Autobench: 1` header and a loopback Host. The agent must never get tools to approve, change limits,
+  arm live or resume.
 - Config via `.env` at the repo root (see `.env.example`). Never commit `.env`.

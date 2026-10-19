@@ -3,6 +3,10 @@
 import 'package:web/web.dart';
 
 const icons = <String, String>{
+  'wallet': 'M3 7h15a3 3 0 0 1 3 3v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM3 7l12-4 2 4|M16 13.5h2',
+  'trade': 'M7 20V4M3 8l4-4 4 4|M17 4v16M13 16l4 4 4-4',
+  'shield': 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z',
+  'octagon': 'M8 3h8l5 5v8l-5 5H8l-5-5V8z|M9 9l6 6M15 9l-6 6',
   'cursor': 'M5 3l14 8-6 2-2 6z',
   'cross': 'M12 3v18M3 12h18',
   'trendline': 'M4 19L20 5|!M4 19m-2 0a2 2 0 1 0 4 0a2 2 0 1 0-4 0|!M20 5m-2 0a2 2 0 1 0 4 0a2 2 0 1 0-4 0',

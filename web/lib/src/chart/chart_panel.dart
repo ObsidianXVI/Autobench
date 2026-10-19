@@ -13,15 +13,19 @@ import '../core/chartmath.dart';
 import '../core/layers.dart';
 import '../core/format.dart';
 import '../core/models.dart';
+import '../core/trading.dart';
 import '../ui/api.dart';
 import '../ui/dom.dart';
 import '../ui/kit/icons.dart';
 import '../ui/kit/overlay.dart';
 import '../ui/kit/state.dart';
 import '../ui/store.dart';
+import '../ui/trading_state.dart';
+import '../ui/trading_ui.dart';
 import 'annotations.dart';
 import 'drawing_ops.dart';
 import 'engine.dart';
+import 'trading_overlay.dart';
 
 const palette = ['#f59e0b', '#38bdf8', '#e879f9', '#34d399', '#f87171', '#a3e635', '#fb923c', '#60a5fa'];
 const compareColors = ['#f472b6', '#facc15', '#2dd4bf', '#c084fc', '#fb7185'];
@@ -67,6 +71,13 @@ class _Drag {
   _Drag(this.original, this.handle, this.startX, this.startY);
 }
 
+class _TradeDrag {
+  final TradeHit hit;
+  final double startY;
+  bool moved = false;
+  _TradeDrag(this.hit, this.startY);
+}
+
 class ChartPanel {
   final ChartState state;
   final int index;
@@ -95,6 +106,11 @@ class ChartPanel {
   int? _legendIndex;
   HTMLElement? _prompt;
   _Drag? _drag;
+  _TradeDrag? _tdrag;
+  late final TradingOverlay trading;
+  List<PriceLine> _alertLines = const [];
+  final _tradeReload = Debouncer(200);
+  int _tradeSeq = 0;
   Timer? _liveTimer, _clock;
   String? _error;
   final void Function(ChartPanel) onActivate;
@@ -106,6 +122,8 @@ class ChartPanel {
     _toLatest.isHidden = true;
     engine = ChartEngine(_host);
     layer = AnnotationLayer(engine);
+    trading = TradingOverlay(engine);
+    engine.topOverlay = trading.draw;
     engine.onClick = _click;
     engine.onDoubleClick = _doubleClick;
     engine.onCrosshair = _move;
@@ -136,6 +154,8 @@ class ChartPanel {
     });
     _scope.listen(store.tool, (_) => cancelDraft());
     _scope.listen(store.alerts, (_) => _applyAlerts());
+    _scope.listen(trade.version, (_) => _tradeReload(_loadTrading));
+    _scope.listen(trade.status, (_) => _tradeReload(_loadTrading));
     _scope.listen(crosshairTime, (v) {
       if (v.$1 != index) engine.setSyncedCrosshair(store.syncCrosshair.value ? v.$2 : null);
     });
@@ -177,6 +197,7 @@ class ChartPanel {
     if (symbolChanged) {
       store.selected.value = null;
       engine.markers = [];
+      trading.data = null;
     }
     if (symbolChanged) cfg = null;
     _renderLegend();
@@ -198,6 +219,7 @@ class ChartPanel {
       _ensureDrawingLayers();
       _applyDrawings();
       _applyAlerts();
+      _loadTrading();
       _showDefaultRange();
       _loading = false;
       if (b.isEmpty) _error = 'No data for $symbol ($interval)';
@@ -459,6 +481,131 @@ class ChartPanel {
     engine.downColorOverride = store.pref<String?>('chart.downColor');
     if (!store.pref<bool>('chart.markers')) engine.markers = [];
     engine.refreshTheme();
+    trading
+      ..show = store.pref<bool>('chart.trading')
+      ..showFills = store.pref<bool>('chart.fills')
+      ..showTradeLines = store.pref<bool>('chart.tradeLines')
+      ..upColor = engine.upColorOverride ?? engine.theme.up
+      ..downColor = engine.downColorOverride ?? engine.theme.down;
+    _syncLines();
+  }
+
+  // ---------------------------------------------------------------- trading
+
+  Future<void> _loadTrading() async {
+    final sym = symbol;
+    final seq = ++_tradeSeq;
+    final j = await attempt(trade.chart(sym));
+    if (seq != _tradeSeq || sym != symbol) return;
+    trading.data = j == null ? null : TChartData.fromJson(j);
+    _syncLines();
+  }
+
+  void _syncLines() {
+    engine.priceLines = [..._alertLines, ...trading.priceLines()];
+    engine.invalidate();
+  }
+
+  void _openTicket(OrderDraft d) {
+    trade.openTicket(d);
+    store.panel.value = 'trade';
+  }
+
+  double _roundPrice(double v) => double.parse(v.toStringAsFixed(v.abs() >= 1 ? 2 : 4));
+
+  Future<void> _tradeClick(TradeHit hit, double cx, double cy) async {
+    final d = trading.data;
+    final o = hit.order;
+    switch (hit.kind) {
+      case 'order-x':
+        if (o != null) await cancelOrder(o, protectsPosition: d?.position != null);
+      case 'position-x':
+        if (d?.position != null) await closePositionDialog(d!.position!);
+      case 'ticket':
+        if (hit.ticket != null) await reviewTicket(hit.ticket!);
+      case 'order':
+        if (o != null) _orderMenu(o, cx, cy);
+      case 'position':
+        if (d?.position != null) _positionMenu(d!.position!, cx, cy, null);
+    }
+  }
+
+  void _orderMenu(TOrder o, double cx, double cy) {
+    final p = trading.data?.position;
+    showMenu([
+      MenuItem.header('${o.roleLabel} ${o.typeLabel} ${qtyText(o.remaining)} ${o.symbol} @ ${o.linePrice == null ? 'MKT' : fmtPrice(o.linePrice!)}'),
+      MenuItem('Modify…', iconName: 'edit', hint: 'or drag the line', onSelect: () => modifyOrderDialog(o)),
+      if (o.role == 'stop_loss' && p != null)
+        MenuItem('Move stop to breakeven (${fmtPrice(p.avgCost)})', iconName: 'shield',
+            onSelect: () => _modifyPrice(o, p.avgCost)),
+      MenuItem('Cancel order', iconName: 'x', danger: true,
+          onSelect: () => cancelOrder(o, protectsPosition: p != null)),
+    ], x: cx, y: cy);
+  }
+
+  void _positionMenu(TPosition p, double cx, double cy, double? price) {
+    final orders = trading.data?.orders ?? const <TOrder>[];
+    final sl = orders.where((o) => o.isOpen && o.role == 'stop_loss').firstOrNull;
+    final tp = orders.where((o) => o.isOpen && o.role == 'take_profit').firstOrNull;
+    final exitSide = p.isLong ? 'sell' : 'buy';
+    final at = price ?? (p.marketPrice ?? p.avgCost) * (p.isLong ? 0.97 : 1.03);
+    showMenu([
+      MenuItem.header('${p.isLong ? 'Long' : 'Short'} ${qtyText(p.qty.abs())} ${p.symbol} @ ${fmtPrice(p.avgCost)} · ${money(p.unrealizedPnl)}'),
+      MenuItem('Close position…', iconName: 'x', onSelect: () => closePositionDialog(p)),
+      MenuItem('Close half…', iconName: 'minus', onSelect: () => closePositionDialog(p, fraction: 0.5)),
+      if (price != null) MenuItem('Close with a limit at ${fmtPrice(price)}…', iconName: 'hline', onSelect: () => closePositionDialog(p, limitPrice: price)),
+      sl == null
+          ? MenuItem('Add stop-loss${price != null ? ' at ${fmtPrice(price)}' : ''}…', iconName: 'shield',
+              onSelect: () => _openTicket(OrderDraft(p.symbol, exitSide, type: 'stop', price: _roundPrice(at), qty: p.qty.abs())))
+          : MenuItem('Move stop-loss${price != null ? ' to ${fmtPrice(price)}' : ' to breakeven'}', iconName: 'shield',
+              onSelect: () => _modifyPrice(sl, price ?? p.avgCost)),
+      if (tp == null && price != null)
+        MenuItem('Add take-profit at ${fmtPrice(price)}…', iconName: 'check',
+            onSelect: () => _openTicket(OrderDraft(p.symbol, exitSide, price: price, qty: p.qty.abs()))),
+      MenuItem('Add to position…', iconName: 'plus', onSelect: () => _openTicket(OrderDraft(p.symbol, p.isLong ? 'buy' : 'sell', price: price))),
+    ], x: cx, y: cy);
+  }
+
+  Future<void> _modifyPrice(TOrder o, double price) async {
+    try {
+      await trade.modify(o.id, {o.priceField: _roundPrice(price)});
+      toast('${o.roleLabel} moved to ${fmtPrice(_roundPrice(price))}', kind: 'success', ms: 2000);
+    } catch (e) {
+      toast('$e', kind: 'error', ms: 6000);
+    }
+    _loadTrading();
+  }
+
+  List<MenuItem> _tradeMenuItems(double p, double cx, double cy) {
+    final st = trade.status.value;
+    final pos = trading.data?.position;
+    if (st == null || !st.connected) return const [];
+    return [
+      MenuItem('Trade at ${fmtPrice(p)}', iconName: 'trade', submenu: [
+        MenuItem('Buy limit @ ${fmtPrice(p)}', onSelect: () => _openTicket(OrderDraft(symbol, 'buy', price: p))),
+        MenuItem('Sell limit @ ${fmtPrice(p)}', onSelect: () => _openTicket(OrderDraft(symbol, 'sell', price: p))),
+        MenuItem('Buy stop @ ${fmtPrice(p)}', onSelect: () => _openTicket(OrderDraft(symbol, 'buy', type: 'stop', price: p))),
+        MenuItem('Sell stop @ ${fmtPrice(p)}', onSelect: () => _openTicket(OrderDraft(symbol, 'sell', type: 'stop', price: p))),
+      ]),
+      if (pos != null)
+        MenuItem('${pos.isLong ? 'Long' : 'Short'} ${qtyText(pos.qty.abs())} position…', iconName: 'wallet',
+            hint: 'stop, target, close', onSelect: () => Timer.run(() => _positionMenu(pos, cx, cy, p))),
+    ];
+  }
+
+  String _fillTime(int t) {
+    final d = DateTime.fromMillisecondsSinceEpoch(t * 1000);
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}';
+  }
+
+  /// An order ticket from a long/short position drawing: entry, stop and target from its points.
+  void orderFromDrawing(Annotation a) {
+    if (a.points.length < 3) return;
+    final entry = a.points[0].price, stop = a.points[1].price, target = a.points[2].price;
+    if (entry == null) return;
+    _openTicket(OrderDraft(a.symbol, a.type == 'long_position' ? 'buy' : 'sell',
+        price: _roundPrice(entry), stopLoss: stop == null ? null : _roundPrice(stop), takeProfit: target == null ? null : _roundPrice(target)));
   }
 
   /// Drawings can name layers the symbol's configuration does not have yet (e.g. the agent's);
@@ -539,13 +686,13 @@ class ChartPanel {
   }
 
   void _applyAlerts() {
-    engine.priceLines = [
+    _alertLines = [
       for (final a in store.alerts.value)
         if (a.symbol == symbol && a.status == 'active' && a.value != null && a.kind != 'change_above' &&
             a.kind != 'change_below' && a.kind != 'expression')
           PriceLine(a.value!, '#f59e0b', '⏰ ${a.description}'),
     ];
-    engine.invalidate();
+    _syncLines();
   }
 
   // ---------------------------------------------------------------- view helpers
@@ -676,6 +823,11 @@ class ChartPanel {
 
   bool _pointerDown(double x, double y, PointerEvent e) {
     if (tool != 'select') return false;
+    final th = trading.hitAt(x, y);
+    if (th != null && th.kind != 'fill') {
+      _tdrag = _TradeDrag(th, y);
+      return true;
+    }
     final handle = layer.hitHandle(x, y);
     if (handle != null) {
       final a = store.drawingById(handle.$1);
@@ -693,6 +845,20 @@ class ChartPanel {
   }
 
   void _pointerDrag(double x, double y, PointerEvent e) {
+    final td = _tdrag;
+    if (td != null) {
+      final o = td.hit.order;
+      if (td.hit.kind == 'order' && o != null && o.linePrice != null) {
+        final price = engine.yToPrice(y);
+        if (price == null || !price.isFinite || price <= 0) return;
+        td.moved = true;
+        trading.dragId = o.id;
+        trading.dragPrice = _roundPrice(price);
+        engine.cursor = 'ns-resize';
+        _syncLines();
+      }
+      return;
+    }
     final d = _drag;
     if (d == null) return;
     final a = d.original;
@@ -741,6 +907,31 @@ class ChartPanel {
   }
 
   Future<void> _pointerUp(double x, double y, PointerEvent e) async {
+    final td = _tdrag;
+    _tdrag = null;
+    if (td != null) {
+      final o = td.hit.order;
+      if (td.moved && o != null && trading.dragPrice != null) {
+        final price = trading.dragPrice!;
+        if ((price - (o.linePrice ?? price)).abs() > 1e-9) {
+          try {
+            await trade.modify(o.id, {o.priceField: price});
+            toast('${o.roleLabel} ${o.typeLabel} moved to ${fmtPrice(price)}', kind: 'success', ms: 1800);
+          } catch (err) {
+            toast('$err', kind: 'error', ms: 6000);
+          }
+        }
+        trading.dragId = null;
+        trading.dragPrice = null;
+        await _loadTrading();
+      } else if (!td.moved) {
+        // pointer coordinates are fractional; package:web types them as int
+        final raw = e as JSObject;
+        await _tradeClick(td.hit, (raw['clientX'] as JSNumber).toDartDouble, (raw['clientY'] as JSNumber).toDartDouble);
+      }
+      _syncLines();
+      return;
+    }
     final d = _drag;
     _drag = null;
     if (d == null) return;
@@ -786,10 +977,22 @@ class ChartPanel {
         layer.hoverId = hov;
         layer.update();
       }
-      final marker = engine.markerAt(x, y);
+      final th = tool == 'select' && y < engine.mainHeight ? trading.hitAt(x, y) : null;
+      var marker = engine.markerAt(x, y);
+      if (th != null && th.kind == 'fill') {
+        final fs = th.fills!;
+        marker = EventMarker(fs.first.time, '', '', [
+          for (final f in fs)
+            '${f.isBuy ? 'Bought' : 'Sold'} ${qtyText(f.qty)} @ ${fmtPrice(f.price)}'
+                '${f.role != null ? ' (${f.role!.replaceAll('_', ' ')})' : ''}'
+                '${f.realizedPnl != null ? ' · ${money(f.realizedPnl)}' : ''} · ${_fillTime(f.time)}',
+        ].join('\n'));
+      }
       root.setAttribute('data-marker', marker?.tooltip ?? '');
       engine.cursor = tool != 'select'
           ? 'crosshair'
+          : th != null && th.kind != 'fill'
+              ? (th.kind == 'order' ? 'ns-resize' : 'pointer')
           : onHandle
               ? 'move'
               : hov != null
@@ -882,6 +1085,8 @@ class ChartPanel {
       btn('text', 'Edit text', (_) => editDrawingText(a)),
       if (a.type == 'horizontal_line' || a.type == 'horizontal_ray')
         btn('alarm', 'Add alert on this line', (_) => addLineAlert(a)),
+      if (a.type == 'long_position' || a.type == 'short_position')
+        btn('trade', 'Create order from this', (_) => orderFromDrawing(a)),
       btn(locked ? 'lock' : 'unlock', locked ? 'Unlock' : 'Lock', (_) => _style(a, {'locked': !locked}), on: locked),
       btn('copy', 'Clone', (_) => cloneDrawing(a)),
       btn('eye-off', 'Hide', (_) => updateDrawing(a, {'visible': false}, label: 'Hide drawing')),
@@ -914,6 +1119,8 @@ class ChartPanel {
   void _drawingMenu(Annotation a, {Element? anchor, double? x, double? y}) {
     final locked = layer.isLocked(a);
     showMenu([
+      if (a.type == 'long_position' || a.type == 'short_position')
+        MenuItem('Create order from this…', iconName: 'trade', onSelect: () => orderFromDrawing(a)),
       MenuItem('Edit text…', iconName: 'text', onSelect: () => editDrawingText(a)),
       if (a.type == 'horizontal_line' || a.type == 'horizontal_ray')
         MenuItem('Add alert on line', iconName: 'alarm', onSelect: () => addLineAlert(a)),
@@ -934,6 +1141,17 @@ class ChartPanel {
 
   void _contextMenu(double x, double y, double? price, MouseEvent e) {
     final cx = e.clientX.toDouble(), cy = e.clientY.toDouble();
+    final th = y < engine.mainHeight ? trading.hitAt(x, y) : null;
+    if (th != null && th.kind != 'fill') {
+      if (th.order != null) {
+        _orderMenu(th.order!, cx, cy);
+      } else if (th.ticket != null) {
+        reviewTicket(th.ticket!);
+      } else if (trading.data?.position != null) {
+        _positionMenu(trading.data!.position!, cx, cy, price == null ? null : _roundPrice(price));
+      }
+      return;
+    }
     final id = y < engine.mainHeight ? layer.hit(x, y) : null;
     final a = id == null ? null : store.drawingById(id);
     if (a != null) {
@@ -952,6 +1170,7 @@ class ChartPanel {
             onSelect: () => _commitDrawing('horizontal_line', [Point(bars.isEmpty ? null : bars.last.time, p)])),
         MenuItem('Copy price ${fmtPrice(p)}', iconName: 'copy',
             onSelect: () => window.navigator.clipboard.writeText(fmtPrice(p))),
+        ..._tradeMenuItems(p, cx, cy),
         const MenuItem.divider(),
       ],
       MenuItem('Reset chart view', iconName: 'refresh', shortcut: 'Alt+R', onSelect: resetView),
@@ -975,6 +1194,10 @@ class ChartPanel {
             label: 'Add volume')),
       MenuItem(store.pref<bool>('chart.grid') ? 'Hide grid' : 'Show grid', iconName: 'table',
           onSelect: () => store.setPref('chart.grid', !store.pref<bool>('chart.grid'))),
+      MenuItem('Trading on chart', iconName: 'wallet', submenu: [
+        for (final (k, l) in [('chart.trading', 'Positions, orders & proposals'), ('chart.fills', 'Executions'), ('chart.tradeLines', 'Closed trades (entry → exit)')])
+          MenuItem(l, checked: store.pref<bool>(k), onSelect: () => store.setPref(k, !store.pref<bool>(k))),
+      ]),
       const MenuItem.divider(),
       MenuItem(store.drawingsHidden.value ? 'Show drawings' : 'Hide drawings', iconName: 'eye',
           onSelect: () => store.drawingsHidden.value = !store.drawingsHidden.value),
@@ -1116,6 +1339,9 @@ class ChartPanel {
     o['showVolume'] = (() => engine.showVolume.toJS).toJS;
     o['spacing'] = (() => engine.spacing.toJS).toJS;
     o['priceLines'] = (() => engine.priceLines.length.toJS).toJS;
+    o['tradeHits'] = (() => jsonEncode([
+          for (final t in trading.hits) {'kind': t.kind, 'x': t.x + t.w / 2, 'y': t.y + t.hgt / 2, 'order': t.order?.id}
+        ]).toJS).toJS;
     o['chartType'] = (() => engine.chartType.name.toJS).toJS;
     o['scale'] = (() => engine.scaleMode.name.toJS).toJS;
     o['xOfTime'] = ((int t) => layer.x(t)?.toJS).toJS;

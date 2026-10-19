@@ -12,6 +12,7 @@ import 'agent.dart';
 import 'alerts.dart';
 import 'layers.dart';
 import 'news.dart';
+import 'trade.dart';
 import 'watchlist.dart';
 
 class _PanelDef {
@@ -33,6 +34,7 @@ class Dock {
   Dock({required this.onCreateAlert}) {
     _defs = [
       _PanelDef('watchlist', 'Watchlist & details', 'list', () => WatchlistPanel()),
+      _PanelDef('trade', 'Trade (order ticket)', 'trade', () => TradePanel()),
       _PanelDef('alerts', 'Alerts', 'alarm', () => AlertsPanel(onCreate: onCreateAlert)),
       _PanelDef('news', 'News', 'news', () => NewsPanel()),
       _PanelDef('agent', 'Agent activity & analyses', 'bot', () => AgentPanel()),
@@ -56,6 +58,7 @@ class Dock {
         AgentPanel p => p.root,
         NotesPanel p => p.root,
         LayersPanel p => p.root,
+        TradePanel p => p.root,
         _ => h('div'),
       };
 

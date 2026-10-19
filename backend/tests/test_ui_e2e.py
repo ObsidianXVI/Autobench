@@ -5,6 +5,7 @@ Needs: `pip install -e ".[ui-test]"` (Playwright), Chrome or `playwright install
 build (`cd web && dart run tool/build.dart`). Skipped when any of these is missing."""
 
 import asyncio
+import json
 import concurrent.futures
 import os
 import socket
@@ -92,6 +93,10 @@ def _reset(server):
         httpx.delete(f"{server}/api/annotations", params={"symbol": sym})
     for cfg in httpx.get(f"{server}/api/chart-config").json():
         httpx.delete(f"{server}/api/chart-config/{cfg}")
+    th = {"X-Autobench": "1"}
+    httpx.post(f"{server}/api/trading/resume", headers=th)
+    httpx.put(f"{server}/api/trading/settings", json={"mode": "confirm"}, headers=th)
+    httpx.post(f"{server}/api/trading/sim/reset", params={"cash": 100000}, headers=th)
 
 
 @pytest.fixture
@@ -523,3 +528,88 @@ def test_reload_restores_zoom_prefs_and_panels(page, server):
     assert page.is_visible(".layers-panel")
     page.wait_for_function("__autobench.chart.active().showVolume() === false")
     page.wait_for_function(f"Math.abs(__autobench.chart.active().spacing() - {spacing}) / {spacing} < 0.03")
+
+
+# ------------------------------------------------------------------------------------- trading (simulator)
+
+TH = {"X-Autobench": "1"}
+
+
+def sim_price(server, sym, price):
+    httpx.post(f"{server}/api/trading/sim/price", json={"symbol": sym, "price": price}, headers=TH)
+
+
+def test_order_ticket_bracket_fill_and_drag_stop(page, server):
+    sim_price(server, "SPY", 100)
+    page.click("button[aria-label='Trade (order ticket)']")
+    page.wait_for_selector(".trade-panel .side-btn.buy.on")
+    page.fill("input[aria-label='Limit price']", "99")
+    page.fill("input[aria-label='Shares']", "20")
+    page.wait_for_function("document.querySelector('.trade-check').textContent.includes('Risk to stop')")
+    page.click(".submit-btn")
+    page.wait_for_selector(".toast:has-text('Order sent')")
+    page.wait_for_function("__autobench.chart.active().priceLines() === 3")  # entry + held stop & target
+    orders = httpx.get(f"{server}/api/trading/orders").json()
+    assert sorted(o["role"] for o in orders) == ["entry", "stop_loss", "take_profit"]
+    sim_price(server, "SPY", 98.5)  # fills the entry
+    page.wait_for_selector(".toast:has-text('Bought SPY')")
+    page.wait_for_selector(".pos-card:has-text('LONG 20')")
+    page.wait_for_function("__autobench.chart.active().priceLines() === 3")  # position + stop + target
+    sl = next(o for o in httpx.get(f"{server}/api/trading/orders").json() if o["role"] == "stop_loss")
+    box = chart_box(page)
+    y = page.evaluate(f"__autobench.chart.active().yOfPrice({sl['stop_price']})")
+    page.mouse.move(box["x"] + box["width"] * 0.4, box["y"] + y)
+    page.mouse.down()
+    page.mouse.move(box["x"] + box["width"] * 0.4, box["y"] + y - 25, steps=6)
+    page.mouse.up()
+    page.wait_for_function(f"fetch('/api/trading/orders').then(r => r.json()).then(a => a.find(o => o.role === 'stop_loss').stop_price > {sl['stop_price']})")
+
+
+def test_agent_proposal_approval_and_trading_page(page, server):
+    sim_price(server, "AAPL", 100)
+    mcp_call(server, "propose_order", {"symbol": "AAPL", "side": "buy", "qty": 10, "limit_price": 101, "stop_loss": 96,
+                                       "take_profit": 110, "rationale": "Test proposal: pullback entry with a defined stop."})
+    page.wait_for_selector(".toast:has-text('Agent proposes')")
+    page.wait_for_selector(".trade-nav .nav-badge:text-is('1')")
+    page.click(".toast:has-text('Agent proposes') button:has-text('Review')")
+    page.wait_for_selector(".ticket-review .check-rows")
+    page.click(".dialog button:has-text('Approve & send')")
+    page.wait_for_selector(".toast:has-text('Bought AAPL')")
+    page.click("a.page-tab:has-text('Trading')")
+    page.wait_for_selector(".tr-body tr[data-symbol='AAPL']")
+    assert "PAPER" in page.inner_text(".tr-head")
+    page.click(".tr-tabs .tab:has-text('History')")
+    page.wait_for_selector(".tr-body tr[data-trade]")
+    page.click(".tr-tabs .tab:has-text('Activity log')")
+    page.wait_for_selector(".tr-body td:has-text('approve')")
+    # kill switch: halt, banner and nav state, then resume
+    page.click("button[aria-label='Kill switch']")
+    page.click(".menu-item:has-text('Halt new orders')")
+    page.click(".dialog button:has-text('Halt')")
+    page.wait_for_selector(".tr-banner:has-text('Trading halted')")
+    page.wait_for_selector(".trade-nav.halted")
+    page.click("button[aria-label='Resume trading']")
+    page.wait_for_selector(".tr-banner:empty", state="attached")
+
+
+def test_chart_context_menu_and_close_position(page, server):
+    px = round(httpx.get(f"{server}/api/quote/SPY").json()["price"], 2)  # keep the position line on screen
+    sim_price(server, "SPY", px)
+    r = httpx.post(f"{server}/api/trading/orders", json={"symbol": "SPY", "side": "buy", "qty": 2, "limit_price": round(px * 1.01, 2)},
+                   headers=TH)
+    assert r.status_code == 200, r.text
+    page.wait_for_function("__autobench.chart.active().priceLines() >= 1")  # the position line
+    box = chart_box(page)
+    page.mouse.click(box["x"] + 300, box["y"] + 150, button="right")
+    page.hover(".menu-item:has-text('Trade at')")
+    page.click(".menu-item:has-text('Sell limit')")
+    page.wait_for_selector(".trade-panel .side-btn.sell.on")
+    page.wait_for_selector(".trade-form:has-text('Reduces your long position')")
+    # close the position from the position line's × button
+    page.wait_for_function("JSON.parse(__autobench.chart.active().tradeHits()).some(h => h.kind === 'position-x')")
+    x = next(h for h in json.loads(page.evaluate("__autobench.chart.active().tradeHits()")) if h["kind"] == "position-x")
+    page.mouse.click(box["x"] + x["x"], box["y"] + x["y"])  # the × on the position label
+    page.wait_for_selector(".dialog:has-text('Close SPY long')")
+    page.click(".dialog button:has-text('Sell to close')")
+    page.wait_for_selector(".toast:has-text('Sold SPY')")
+    page.wait_for_function("fetch('/api/trading/overview').then(r => r.json()).then(o => o.positions.length === 0)")

@@ -938,9 +938,9 @@ def show_in_ui(
 
 
 @tool()
-def get_guide(topic: Literal["workflow", "expressions", "annotations", "interpretation", "screener"]) -> Any:
+def get_guide(topic: Literal["workflow", "expressions", "annotations", "interpretation", "screener", "trading"]) -> Any:
     """Reference: research workflow, expression language, drawing types/conventions, interpretation notes,
-    screener fields and syntax."""
+    screener fields and syntax, and the trading workflow (sizing, brackets, approvals, limits)."""
     return {"topic": topic, "text": guides.GUIDES[topic]}
 
 

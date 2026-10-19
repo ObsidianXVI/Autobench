@@ -187,6 +187,9 @@ class ChartEngine {
   /// Draws on top of the main pane (drawings). Receives the context and the pane size.
   void Function(CanvasRenderingContext2D ctx, double w, double h)? overlay;
 
+  /// Drawn above [overlay] (positions and orders sit on top of drawings).
+  void Function(CanvasRenderingContext2D ctx, double w, double h)? topOverlay;
+
   /// Called after each frame (DOM legends reposition themselves from [paneGeometry]).
   void Function()? afterDraw;
 
@@ -676,8 +679,8 @@ class ChartEngine {
       }
       _dash(ctx, const []);
       _drawMarkers(ctx, p);
-      final o = overlay;
-      if (o != null) {
+      for (final o in [overlay, topOverlay]) {
+        if (o == null) continue;
         ctx.save();
         o(ctx, w, p.height);
         ctx.restore();

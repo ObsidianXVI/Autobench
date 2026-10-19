@@ -322,3 +322,19 @@ def test_ibkr_mapping():
     a = map_account(vals, "DU1", -20.0)
     assert a["currency"] == "SGD" and a["net_liquidation"] == 135000 and a["usd_to_base"] == 1.35
     assert a["unrealized_pnl"] == 12 and a["daily_pnl"] == -20
+
+
+def test_user_exit_orders_are_tagged_and_cleaned_up(client):
+    order(client, limit_price=101)  # unprotected long 10 @ 100
+    stop = order(client, side="sell", order_type="stop", stop_price=95).json()  # standalone protective stop
+    tp = order(client, side="sell", limit_price=110).json()  # limit above the market = take-profit
+    roles = {o["id"]: o["role"] for o in client.get("/api/trading/orders").json()}
+    assert roles[stop["order_ids"][0]] == "stop_loss" and roles[tp["order_ids"][0]] == "take_profit"
+    assert client.get("/api/trading/overview").json()["positions"][0]["stop"] == 95
+    # a closing order cannot carry its own bracket
+    r = order(client, side="sell", limit_price=110, stop_loss=120)
+    assert r.status_code == 400 and "cannot carry" in r.json()["detail"]
+    price(client, "AAPL", 111)  # target fills: the stop would now open a short, so it is cancelled
+    trading._worker.submit(lambda: None).result()
+    assert client.get("/api/trading/orders").json() == []
+    assert client.get("/api/trading/overview").json()["positions"] == []

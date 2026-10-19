@@ -97,6 +97,20 @@ const prefDefaults = <String, Object?>{
   'markets.sectorPeriod': '1d',
   'markets.boardGroup': 'Futures',
   'recentSymbols': <Object?>[],
+  'chart.trading': true, // positions, orders, proposals on the chart
+  'chart.fills': true, // execution markers
+  'chart.tradeLines': true, // entry→exit connectors of closed trades
+  'trade.sizing': 'shares', // shares | value | risk
+  'trade.riskPct': 0.5,
+  'trade.value': 1000.0,
+  'trade.qty': 10.0,
+  'trade.tif': 'day',
+  'trade.useStop': true,
+  'trade.useTarget': true,
+  'trade.stopPct': 3.0,
+  'trade.targetR': 2.0,
+  'trading.tab': 'positions',
+  'trading.equityDays': 90,
 };
 
 class Store {

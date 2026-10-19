@@ -22,8 +22,12 @@ import 'pages/calendar.dart';
 import 'pages/heatmap.dart';
 import 'pages/markets.dart';
 import 'pages/screener.dart';
+import 'pages/trading.dart';
 import 'panels/dock.dart';
 import 'store.dart';
+import 'trading_state.dart';
+import 'trading_ui.dart';
+import '../core/trading.dart';
 
 const pages = [
   ('chart', 'Chart', 'candles'),
@@ -31,6 +35,7 @@ const pages = [
   ('heatmap', 'Heatmap', 'map'),
   ('markets', 'Markets', 'globe'),
   ('calendar', 'Calendar', 'calendar'),
+  ('trading', 'Trading', 'wallet'),
 ];
 
 class App {
@@ -66,6 +71,9 @@ class App {
     _scope.listen(store.status, (_) => _renderNav());
     _scope.listen(store.provider, (_) => _renderNav());
     _scope.listen(store.alerts, (_) => _renderNav());
+    _scope.listen(trade.status, (_) => _renderNav());
+    _scope.listen(trade.pending, (_) => _renderNav());
+    trade.start();
     window.addEventListener('hashchange', ((Event _) {
       final p = _pageFromHash();
       if (p != null) store.page.value = p;
@@ -131,6 +139,7 @@ class App {
               {'href': '#$key', 'aria-current': key == current ? 'page' : 'false'}),
       ]),
       h('span.spacer'),
+      _tradeNav(),
       h('button.nav-btn', [icon('alarm', size: 17), if (triggered > 0) h('span.nav-badge', '$triggered')], {
         'type': 'button',
         'data-tip': '$active active alert${active == 1 ? '' : 's'}${triggered > 0 ? ', $triggered triggered' : ''}',
@@ -159,6 +168,30 @@ class App {
     ]);
   }
 
+  HTMLElement _tradeNav() {
+    final st = trade.status.value;
+    final pending = trade.pending.value.length;
+    if (st == null) return h('span');
+    final label = !st.connected ? '${st.brokerLabel} offline' : '${st.brokerLabel} ${st.isLive ? 'LIVE' : 'PAPER'}';
+    return h('button.nav-btn.trade-nav${st.halted ? '.halted' : ''}${st.isLive ? '.live' : ''}', [
+      h('span.dot${st.connected ? '.ok' : '.warn'}'),
+      h('span.small', st.halted ? 'HALTED' : label),
+      if (pending > 0) h('span.nav-badge.agent', '$pending'),
+    ], {
+      'type': 'button',
+      'data-tip': pending > 0
+          ? '$pending agent order proposal${pending == 1 ? '' : 's'} awaiting your approval'
+          : (st.connected ? 'Account ${st.account ?? ''} · agent orders: ${st.mode == 'auto' ? 'auto (paper)' : 'you confirm each'}' : (st.message ?? '')),
+      'data-tip-pos': 'bottom',
+      'aria-label': 'Trading account',
+    }, {
+      'click': (_) {
+        if (pending > 0) store.setPref('trading.tab', 'proposals');
+        store.page.value = 'trading';
+      },
+    });
+  }
+
   String get _themeIcon => store.theme.value == 'light' ? 'sun' : store.theme.value == 'dark' ? 'moon' : 'settings';
 
   void _showPage() {
@@ -177,6 +210,8 @@ class App {
       case MarketsPage p:
         p.onShow();
       case CalendarPage p:
+        p.onShow();
+      case TradingPage p:
         p.onShow();
       case ChartPage p:
         for (final panel in p.panels) {
@@ -203,6 +238,10 @@ class App {
         return p.root;
       case 'calendar':
         final p = CalendarPage();
+        _pageObjects[key] = p;
+        return p.root;
+      case 'trading':
+        final p = TradingPage();
         _pageObjects[key] = p;
         return p.root;
       default:
@@ -295,8 +334,45 @@ class App {
     if (kind == 'agent' && store.panel.value != 'agent') store.unseenAgent.value++;
   }
 
+  void _onTradingEvent(ServerEvent e) {
+    final d = e.data;
+    switch (e.type) {
+      case 'trading.fill':
+        final f = TFill.fromJson(d);
+        final verb = f.isBuy ? 'Bought' : 'Sold';
+        toast('${qtyText(f.qty)} ${f.symbol} @ ${f.price.toStringAsFixed(2)}${f.role != null ? ' · ${f.role!.replaceAll('_', ' ')}' : ''}',
+            title: '$verb ${f.symbol}', kind: 'success', ms: 6000, actionLabel: 'Chart', onAction: () {
+          store.activeChart.symbol.value = f.symbol;
+          store.page.value = 'chart';
+        });
+        _pushActivity('$verb ${qtyText(f.qty)} ${f.symbol} @ ${f.price.toStringAsFixed(2)}', 'user', f.symbol);
+      case 'trading.ticket':
+        final t = TTicket.fromJson(d);
+        if (t.status == 'pending' && t.source == 'agent' && _seenTickets.add(t.id)) {
+          _chime();
+          toast(t.rationale ?? '', title: '✦ Agent proposes ${t.summary}', kind: 'alert', ms: 0, actionLabel: 'Review',
+              onAction: () => reviewTicket(t));
+          _pushActivity('Proposed ${t.summary}', 'agent', t.symbol);
+        } else if (t.status == 'error') {
+          toast(t.message ?? 'Order failed', title: '${t.summary} failed', kind: 'error', ms: 10000);
+        } else if (t.source == 'agent' && t.status == 'working' && _seenTickets.add('${t.id}:sent')) {
+          _pushActivity('Order sent: ${t.summary}', 'agent', t.symbol);
+        }
+      case 'trading.error':
+        final code = d['code'].i;
+        if (code != null && code >= 2100 && code < 2200) return;
+        toast(d['message'].s ?? '', title: 'Broker${code != null ? ' ($code)' : ''}', kind: 'warn', ms: 8000);
+    }
+  }
+
+  final Set<String> _seenTickets = {};
+
   void _onEvent(ServerEvent e) {
     final d = e.data;
+    if (trade.onEvent(e)) {
+      _onTradingEvent(e);
+      return;
+    }
     switch (e.type) {
       case 'hello':
         // only on the first connection, and only if the agent changed the view while we were away

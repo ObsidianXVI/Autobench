@@ -27,8 +27,13 @@ Working rules:
 - Alerts (create_alert) notify the user live; use them for entry/stop levels of a recorded plan.
 - show_in_ui(page=...) switches the user's screen (chart, screener with your filters, heatmap,
   markets, calendar) so they can see what you are describing.
+- Trading (connected broker: IBKR paper/live or the simulator): get_portfolio first, then
+  preview_order and propose_order with a stop_loss and a written rationale. Proposals wait for the
+  user's approval unless they enabled auto mode on a paper account; risk limits are enforced on the
+  server. You cannot approve, change limits or arm live trading. Read rejections (get_order_tickets)
+  and do not re-propose the same order unchanged. Review results with get_trade_history.
 - Recommendations are research output, not financial advice; state key risks and uncertainty.
-Guides: get_guide("workflow" | "expressions" | "annotations" | "interpretation" | "screener").
+Guides: get_guide("workflow" | "expressions" | "annotations" | "interpretation" | "screener" | "trading").
 """
 
 EXPRESSIONS = """\
@@ -146,5 +151,33 @@ class _Guides(dict):
         return key == "screener" or dict.__contains__(self, key)
 
 
-GUIDES = _Guides({"workflow": WORKFLOW, "expressions": EXPRESSIONS, "annotations": ANNOTATIONS,
+TRADING = """\
+Trading with Autobench (the user's broker account: IBKR via IB Gateway/TWS, or the built-in simulator).
+
+1. Context: get_portfolio -> status (paper/live, connected, halted, mode), net liquidation, cash vs
+   invested, open risk, positions with their working stop/target, working orders, pending proposals,
+   and the risk limits. If not connected or halted, do not propose; tell the user.
+2. Plan first (trade-planning skill): entry from levels, structural stop, targets in R, event risk.
+   Link the plan: save_analysis, then propose_order(analysis_id=...).
+3. Size from the account: shares = floor(equity x risk% / |entry - stop|), within limits
+   max_risk_pct (risk to stop), max_position_pct (including working entries) and max_order_value.
+   Round down. preview_order shows exactly what the server will check.
+4. propose_order: limit (or stop for breakouts) entries with stop_loss (required) and usually
+   take_profit -> a bracket: both exits activate when the entry fills and cancel each other. TIF day
+   for intraday ideas, gtc for swing entries. Rationale: setup, evidence, invalidation, what would
+   make you cancel. The user sees it when approving.
+5. Follow up: get_order_tickets(status="pending,rejected,expired,error"). A rejection reason is
+   feedback; address it or drop the idea. Cancel stale entries you proposed with cancel_order.
+6. Manage open positions: propose_close_position for exits (market or limit), partial closes via qty.
+   You cannot cancel a stop protecting an open position; leftover stops/targets are cancelled
+   automatically once a position is closed.
+7. Review: get_trade_history -> win rate, expectancy, avg R, per-trade R vs the planned stop.
+   Feed lessons into save_note and get_track_record.
+
+Rules the server enforces: no shorting / market entries / outside-RTH orders unless enabled, daily
+loss and order-count limits, symbol allow/block lists, live accounts read-only unless the user armed
+them, and the kill switch (halt) blocks everything except the user's closing orders.
+"""
+
+GUIDES = _Guides({"trading": TRADING, "workflow": WORKFLOW, "expressions": EXPRESSIONS, "annotations": ANNOTATIONS,
                   "interpretation": INTERPRETATION})

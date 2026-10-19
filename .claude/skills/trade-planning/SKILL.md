@@ -51,6 +51,11 @@ A recommendation without a plan is an opinion. Plans are built from **levels** (
   exit even if the stop isn't hit.
 - Put the levels on alert (`create_alert`): entry trigger, stop, first target. Alerts fire in the user's UI.
 
+## 7. Execution
+With a connected broker, hand the plan to the `trade-execution` skill: `get_portfolio` for equity
+and limits, then `preview_order` / `propose_order` as a bracket (stop_loss + take_profit). The user
+approves proposals in the UI.
+
 ## Output block
 ```
 Plan (swing, long): entry 178-181 (or trigger: close > 187.2 on rvol>1.5)

@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 SETTINGS_KEY = "trading:settings"
 CONNECTION_KEY = "trading:connection"
 HALT_KEY = "trading:halt"
-PROTECTIVE = ("stop_loss", "take_profit")
+PROTECTIVE = ("stop_loss", "take_profit", "exit")  # orders that only make sense while a position exists
 
 
 def _now() -> datetime:
@@ -67,6 +67,8 @@ def check_order(spec: OrderSpec, *, actor: str, account: dict, positions: list[d
     if reduces and spec.qty > abs(pos_qty):
         errors.append(f"{spec.qty:g} shares would flip the {pos_qty:+g} position; close it first, then open the other side")
     intent = "close" if reduces else "open"
+    if intent == "close" and (spec.stop_loss is not None or spec.take_profit is not None):
+        errors.append("An order that closes a position cannot carry its own stop-loss / take-profit")
 
     if not connected:
         errors.append("Broker is not connected")
@@ -163,6 +165,17 @@ def check_order(spec: OrderSpec, *, actor: str, account: dict, positions: list[d
 # ===================================================================================== trade history
 
 
+def closing_role(spec: OrderSpec, price: float | None) -> str:
+    """Role of an order that reduces a position: stops are stop-losses, limits beyond the market are
+    take-profits, anything else is a plain exit."""
+    if spec.order_type in ("stop", "stop_limit"):
+        return "stop_loss"
+    if spec.order_type == "limit" and price:
+        if (spec.side == "sell" and spec.limit_price > price) or (spec.side == "buy" and spec.limit_price < price):
+            return "take_profit"
+    return "exit"
+
+
 def round_trips(fills: list[dict]) -> list[dict]:
     """Group fills into round-trip trades per symbol (FIFO average cost). A trade opens when the position
     leaves zero and closes when it returns to zero; a fill through zero closes one trade and opens the next."""
@@ -246,6 +259,24 @@ def trade_stats(trades: list[dict]) -> dict:
 
 
 # ===================================================================================== service
+
+
+def _decorate_positions(positions: list[dict], orders: list[dict], fx: float, net: float) -> None:
+    """Add weight, unrealized %, the working stop / target and the risk to the stop to each position."""
+    for p in positions:
+        mv = (p["market_value"] or 0) * fx
+        p["weight_pct"] = _r2(mv / net * 100) if net else None
+        p["unrealized_pct"] = _r2((p["market_price"] / p["avg_cost"] - 1) * 100 * (1 if p["qty"] > 0 else -1)) \
+            if p.get("market_price") and p["avg_cost"] else None
+        exit_side = "sell" if p["qty"] > 0 else "buy"
+        mine = [o for o in orders if o["symbol"] == p["symbol"] and o["side"] == exit_side and o["status"] in OPEN_STATUSES]
+        stops = [o["stop_price"] for o in mine if o.get("role") == "stop_loss" and o.get("stop_price")]
+        targets = [o["limit_price"] for o in mine if o.get("role") == "take_profit" and o.get("limit_price")]
+        # the nearest protective levels
+        p["stop"] = (max(stops) if p["qty"] > 0 else min(stops)) if stops else None
+        p["target"] = (min(targets) if p["qty"] > 0 else max(targets)) if targets else None
+        p["risk_to_stop"] = _r2(abs(p["market_price"] - p["stop"]) * abs(p["qty"]) * fx) \
+            if p["stop"] and p.get("market_price") else None
 
 
 class TradingService:
@@ -381,16 +412,7 @@ class TradingService:
         committed = sum((o["limit_price"] or o["stop_price"] or 0) * (o["qty"] - (o["filled_qty"] or 0))
                         for o in orders if o["side"] == "buy" and o.get("role") in (None, "entry") and o["status"] in OPEN_STATUSES) * fx
         cash = acct.get("cash") or 0.0
-        for p in positions:
-            mv = (p["market_value"] or 0) * fx
-            p["weight_pct"] = _r2(mv / net * 100) if net else None
-            p["unrealized_pct"] = _r2((p["market_price"] / p["avg_cost"] - 1) * 100 * (1 if p["qty"] > 0 else -1)) \
-                if p.get("market_price") and p["avg_cost"] else None
-            prot = [o for o in orders if o["symbol"] == p["symbol"] and o.get("role") == "stop_loss" and o["status"] in OPEN_STATUSES]
-            p["stop"] = prot[0]["stop_price"] if prot else None
-            tgt = [o for o in orders if o["symbol"] == p["symbol"] and o.get("role") == "take_profit" and o["status"] in OPEN_STATUSES]
-            p["target"] = tgt[0]["limit_price"] if tgt else None
-            p["risk_to_stop"] = _r2(abs(p["market_price"] - p["stop"]) * abs(p["qty"]) * fx) if p["stop"] and p.get("market_price") else None
+        _decorate_positions(positions, orders, fx, net)
         capital = {
             "currency": acct.get("currency"), "net_liquidation": net, "cash": cash, "invested": _r2(long_v + short_v),
             "long_value": _r2(long_v), "short_value": _r2(short_v), "committed_to_orders": _r2(committed),
@@ -490,6 +512,8 @@ class TradingService:
             t = self.ticket(tid)
             bus.publish("trading.ticket", t)
             return t
+        if check["intent"] == "close" and entry_role == "entry":
+            entry_role = closing_role(spec, check["estimate"].get("market_price"))
         return self._send(tid, spec, actor, entry_role)
 
     def _send(self, tid: str, spec: OrderSpec, actor: str, entry_role: str = "entry") -> dict:
@@ -545,7 +569,7 @@ class TradingService:
         if not check["ok"]:
             raise ValueError("Cannot approve: " + "; ".join(check["errors"]))
         self._audit("user", "approve", spec.symbol, ticket_id)
-        role = "exit" if (t["check"] or {}).get("intent") == "close" else "entry"
+        role = closing_role(spec, check["estimate"].get("market_price")) if check["intent"] == "close" else "entry"
         return self._send(ticket_id, spec, "user", role)
 
     def reject(self, ticket_id: str, reason: str | None = None, actor: str = "user") -> dict:
@@ -788,9 +812,15 @@ class TradingService:
         symbol = symbol.upper()
         b = self.broker
         connected = b is not None and b.connected
-        pos = next((p for p in b.positions() if p["symbol"] == symbol), None) if connected else None
+        pos, orders = None, []
+        if connected:
+            orders = self.orders(symbol=symbol)
+            pos = next((p for p in b.positions() if p["symbol"] == symbol), None)
+            if pos is not None:
+                acct = b.account()
+                _decorate_positions([pos], orders, acct.get("usd_to_base") or 1.0, acct.get("net_liquidation") or 0.0)
         return {"symbol": symbol, "connected": connected,
-                "position": pos, "orders": self.orders(symbol=symbol) if connected else [],
+                "position": pos, "orders": orders,
                 "tickets": self.tickets(status="pending", symbol=symbol),
                 "fills": self.fills(symbol=symbol, limit=1000),
                 "trades": self.trades(symbol=symbol, limit=100)["trades"]}
@@ -825,7 +855,7 @@ class TradingService:
 
     def _ticket_from_order(self, o: dict) -> None:
         tid = o.get("ticket_id")
-        if not tid or o.get("role") not in ("entry", "exit"):
+        if not tid or o.get("parent_id") is not None:  # bracket children do not change the ticket
             return
         new = {"pending": "working", "working": "working", "partially_filled": "working", "filled": "filled",
                "cancelled": "cancelled", "rejected": "error", "inactive": "error"}.get(o["status"])

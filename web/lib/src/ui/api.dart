@@ -28,7 +28,7 @@ String _enc(String s) => Uri.encodeComponent(s);
 Future<J> request(String path, {String method = 'GET', Object? body}) async {
   final init = RequestInit(
     method: method,
-    headers: {'Content-Type': 'application/json'}.jsify()! as JSObject,
+    headers: {'Content-Type': 'application/json', 'X-Autobench': '1'}.jsify()! as JSObject,
   );
   if (body != null) init.body = jsonEncode(body).toJS;
   final res = await window.fetch(path.toJS, init).toDart;

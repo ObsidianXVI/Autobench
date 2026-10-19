@@ -12,6 +12,7 @@ import '../lib/src/core/markdown.dart';
 import '../lib/src/core/models.dart';
 import '../lib/src/core/ticks.dart';
 import '../lib/src/core/time.dart';
+import '../lib/src/core/trading.dart';
 import '../lib/src/core/treemap.dart';
 import '../lib/src/core/undo.dart';
 
@@ -296,6 +297,32 @@ Future<void> main() async {
     check('drawing layers are created', [withDrawings.ensureDrawingLayers([null, 'agent', 'ideas']),
       withDrawings.layers.map((l) => l.name).toList()], [true, ['ideas', 'Agent', 'Main']]);
     check('unknown drawing layer falls back to main', withDrawings.layerOfDrawing('nope', 'user').id, mainLayerId);
+  });
+
+  group('trading', () {
+    check('shares for 1% risk', sharesForRisk(100000, 1, 50, 48), 500);
+    check('no risk distance → 0', sharesForRisk(100000, 1, 50, 50), 0);
+    check('shares for value', sharesForValue(1000, 333), 3);
+    final bars = [for (final t in [100, 200, 300]) Bar(t, 1, 1, 1, 1, 0)];
+    check('bar for time', [barIndexForTime(bars, 50), barIndexForTime(bars, 100), barIndexForTime(bars, 250), barIndexForTime(bars, 999)],
+        [-1, 0, 1, 2]);
+    final fills = [
+      TFill(execId: 'a', symbol: 'X', side: 'buy', qty: 1, price: 1, time: 150),
+      TFill(execId: 'b', symbol: 'X', side: 'sell', qty: 1, price: 1, time: 170),
+      TFill(execId: 'c', symbol: 'X', side: 'buy', qty: 1, price: 1, time: 10),
+    ];
+    final by = fillsByBar(bars, fills);
+    check('fills grouped by bar', [by.keys.toList(), by[0]!.length], [[0], 2]);
+    check('money', [money(1234.5), money(-12), money(0), money(99.999, sign: false)], ['+\$1,234.50', '−\$12.00', '\$0.00', '\$100.00']);
+    check('holding', [holdingText(90), holdingText(3 * 3600 + 300), holdingText(2 * 86400 + 3600)], ['1m', '3h 05m', '2d 1h']);
+    final o = TOrder.fromJson(J({'id': '7', 'symbol': 'AAPL', 'side': 'sell', 'type': 'stop', 'stop_price': 95.0, 'qty': 10.0,
+      'status': 'pending', 'parent_id': '6', 'role': 'stop_loss'}));
+    check('stop order line', [o.linePrice, o.priceField, o.roleLabel, o.typeLabel, o.held, o.isOpen], [95.0, 'stop_price', 'SL', 'STP', true, true]);
+    final t = TTicket.fromJson(J({'id': 't', 'symbol': 'MSFT', 'source': 'agent', 'status': 'pending',
+      'spec': {'side': 'buy', 'qty': 5.0, 'order_type': 'limit', 'limit_price': 410.5, 'stop_loss': 400.0}, 'check': {'intent': 'open'}}));
+    check('ticket summary', [t.summary, t.entryPrice, t.stopLoss], ['BUY 5 MSFT LMT @ 410.50', 410.5, 400.0]);
+    final p = TPosition.fromJson(J({'symbol': 'X', 'qty': -10.0, 'avg_cost': 50.0}));
+    check('short P&L', [p.isLong, p.pnlAt(45)], [false, 50.0]);
   });
 
   for (final f in _pending) {
