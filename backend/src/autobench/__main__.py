@@ -26,6 +26,7 @@ def main(argv: list[str] | None = None) -> None:
         import uvicorn
 
         logging.basicConfig(level=logging.INFO)
+        logging.getLogger("httpx").setLevel(logging.WARNING)  # one line per upstream request is noise
         uvicorn.run("autobench.app:create_app", factory=True, host=getattr(args, "host", None) or settings.autobench_host,
                     port=getattr(args, "port", None) or settings.autobench_port, reload=getattr(args, "reload", False))
     elif args.cmd == "mcp-stdio":
