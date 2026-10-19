@@ -103,14 +103,14 @@ class Dock {
   void _bindResize() {
     double? startX, startW;
     _resizer.addEventListener('pointerdown', ((PointerEvent e) {
-      startX = e.clientX.toDouble();
+      startX = clientXY(e).$1;
       startW = store.panelWidth.value;
       _resizer.setPointerCapture(e.pointerId);
       root.classList.add('resizing');
     }).toJS);
     _resizer.addEventListener('pointermove', ((PointerEvent e) {
       if (startX == null) return;
-      store.panelWidth.value = (startW! - (e.clientX - startX!)).clamp(240.0, 640.0);
+      store.panelWidth.value = (startW! - (clientXY(e).$1 - startX!)).clamp(240.0, 640.0);
     }).toJS);
     _resizer.addEventListener('pointerup', ((PointerEvent e) {
       startX = null;

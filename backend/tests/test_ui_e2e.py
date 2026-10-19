@@ -893,7 +893,30 @@ def test_portfolio_import_and_returns(page, server, tmp_path):
     eq = page.wait_for_selector(".pf-equation").inner_text()
     assert "+$13,000.00" in eq and "+$190.00" in eq and "$13,190.00" in eq
     assert "+2.90%" in page.inner_text(".tr-kpi:has-text('Time-weighted')")
-    page.wait_for_selector(".pf-chart .pf-line-nav")
+    # charts: labelled axes, a hover tooltip shared by both charts, drag to zoom into a date range
+    plot = page.wait_for_selector(".pc-plot")
+    assert page.locator(".pc-yaxis").first.locator("span").count() >= 3
+    assert "Jan" in page.inner_text(".pc-xaxis >> nth=0")
+    box = plot.bounding_box()
+    mid_y = box["y"] + box["height"] / 2
+    page.mouse.move(box["x"] + box["width"] - 2, mid_y)
+    tip = page.wait_for_selector(".pc-tip:not([hidden])").inner_text()
+    assert "Mon 8 Jan 2024" in tip and "$13,190.00" in tip and "Withdrawn" in tip and "$2,000.00" in tip
+    assert page.locator(".pc-tip:not([hidden])").count() == 2  # the return chart follows
+    page.mouse.move(box["x"] + box["width"] * 0.02, mid_y)
+    page.mouse.down()
+    page.mouse.move(box["x"] + box["width"] * 0.6, mid_y, steps=4)
+    page.mouse.up()
+    page.wait_for_selector(".pf-range.on")
+    assert page.input_value(".pf-range input[aria-label='From']") == "2024-01-02"
+    assert page.input_value(".pf-range input[aria-label='To']") == "2024-01-05"
+    page.wait_for_selector(".pf-equation:has-text('$15,190.00')")
+    # typed dates work too, and a preset returns to the full history
+    page.fill(".pf-range input[aria-label='From']", "2024-01-04")
+    page.wait_for_selector(".pf-equation:has-text('−$310.00')")  # 4–5 Jan: $5,000 in, $310 lost
+    page.click(".seg-btn:has-text('All')")
+    page.wait_for_selector(".pf-range:not(.on)")
+    page.wait_for_selector(".pf-equation:has-text('$13,190.00')")
     page.click(".tr-tabs .tab[data-tab='cash']")
     page.wait_for_function("document.querySelectorAll('.data-table tbody tr .badge').length === 5")
     page.click(".seg-btn:has-text('Deposits & withdrawals')")

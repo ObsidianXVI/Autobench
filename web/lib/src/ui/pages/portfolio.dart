@@ -6,6 +6,7 @@ import 'dart:js_interop';
 
 import 'package:web/web.dart';
 
+import '../../core/chart_ticks.dart';
 import '../../core/format.dart';
 import '../../core/json.dart';
 import '../../core/trading.dart';
@@ -16,6 +17,7 @@ import '../kit/overlay.dart';
 import '../kit/state.dart';
 import '../store.dart';
 import '../trading_state.dart';
+import 'portfolio_chart.dart';
 
 const _tabs = [
   ('overview', 'Overview'),
@@ -45,6 +47,18 @@ class PortfolioPage {
 
   String get _tab => store.pref<String>('portfolio.tab');
   String get _period => store.pref<String>('portfolio.period');
+  String get _start => store.pref<String>('portfolio.start');
+  String get _end => store.pref<String>('portfolio.end');
+  final List<PerfChart> _charts = [];
+
+  /// Shows a custom date range on the Performance tab (from a drag on a chart, a table row, or the date fields).
+  void _showRange(String start, String end) {
+    if (end.compareTo(start) < 0) (start, end) = (end, start);
+    store.setPref('portfolio.start', start);
+    store.setPref('portfolio.end', end);
+    store.setPref('portfolio.period', 'custom');
+    _render();
+  }
 
   PortfolioPage() {
     append(root, [_head, h('section.tr-card.tr-main', [_tabBar, _body])]);
@@ -162,6 +176,8 @@ class PortfolioPage {
     final navWhen = live.v != null ? 'live' : 'statement ${j['nav']['date'].s ?? ''}';
     final contributed = tot['net_contributions'].d;
     final gain = life['investment_gain'].d;
+    // the broker may still be loading positions: fall back to the latest statement rather than an empty table
+    final showLive = live.v != null && (live['positions'].list.isNotEmpty || sp['positions'].list.isEmpty);
     return h('div.pf-overview', [
       h('div.tr-kpis.pf-kpis', [
         _kpi('Account value', money(nav, sign: false), sub: navWhen),
@@ -185,8 +201,8 @@ class PortfolioPage {
       if (life.v != null) _composition(life),
       h('div.pf-grid', [
         h('section.jr-section', [
-          h('h3', live.v != null ? 'Positions (live)' : 'Positions (statement ${sp['date'].s ?? ''})'),
-          live.v != null ? _livePositions(live['positions'].list, nav) : _statementPositions(sp['positions'].list),
+          h('h3', showLive ? 'Positions (live)' : 'Positions (statement ${sp['date'].s ?? ''})'),
+          showLive ? _livePositions(live['positions'].list, nav) : _statementPositions(sp['positions'].list),
         ]),
         h('section.jr-section', [
           h('h3', 'All time'),
@@ -293,24 +309,48 @@ class PortfolioPage {
   // ---------------------------------------------------------------- performance
 
   Future<Object?> _performance() async {
-    final j = await request('/api/portfolio/performance?period=$_period${_acctQ.isEmpty ? '' : '&$_acctQ'}');
+    final custom = _period == 'custom' && _start.isNotEmpty;
+    final q = [
+      'period=${custom ? 'custom' : _period}',
+      if (custom) 'start=$_start',
+      if (custom && _end.isNotEmpty) 'end=$_end',
+      if (_acctQ.isNotEmpty) _acctQ,
+    ];
+    final j = await request('/api/portfolio/performance?${q.join('&')}');
     _account ??= j['account'].s;
     final p = j['summary'];
+    final acct = _accounts.where((a) => a['account'].s == j['account'].s).firstOrNull;
+    HTMLInputElement dateInput(String label, String value) => h('input.input.small.pf-date', null, {
+          'type': 'date',
+          'aria-label': label,
+          'value': value,
+          if (acct?['from'].s != null) 'min': acct!['from'].s!,
+          'max': acct?['to'].s ?? '',
+        }) as HTMLInputElement;
+    final from = dateInput('From', j['from'].s ?? ''), to = dateInput('To', j['to'].s ?? '');
+    void apply() {
+      if (from.value.isNotEmpty && to.value.isNotEmpty) _showRange(from.value, to.value);
+    }
+
+    from.addEventListener('change', ((Event _) => apply()).toJS);
+    to.addEventListener('change', ((Event _) => apply()).toJS);
     final tools = h('div.tr-tools', [
       h('div.seg', [
         for (final (k, l) in _periods)
-          h('button.seg-btn${_period == k ? '.on' : ''}', l, {'type': 'button'}, {
+          h('button.seg-btn${!custom && _period == k ? '.on' : ''}', l, {'type': 'button'}, {
             'click': (_) {
               store.setPref('portfolio.period', k);
               _render();
             },
           }),
       ]),
-      if (p.v != null) h('span.muted.small', '${p['start'].s ?? 'opening'} → ${p['end'].s} · ${p['days'].i} days'),
+      h('div.pf-range${custom ? '.on' : ''}', [from, h('span.muted', '→'), to], {'data-tip': 'Custom date range'}),
+      if (p.v != null) h('span.muted.small', '${p['days'].i} days'),
     ]);
     if (p.v == null) return [tools, j['account'].s == null ? _empty() : h('div.muted.small.pad', 'No account values in this period.')];
     final c = p['contributions'], tr = p['trading'], inc = p['income'];
     final st = j['statement'];
+    final charts = _charts2(j['series'].list);
     return h('div.jr-perf', [
       tools,
       h('div.pf-equation', [
@@ -352,9 +392,9 @@ class PortfolioPage {
             h('span', [h('i.pf-dot.pf-c-up'), 'Gain']),
           ]),
         ]),
-        _valueChart(j['series'].list),
+        charts.$1,
       ]),
-      h('section.jr-section', [h('h3', 'Time-weighted return (cumulative)'), _twrChart(j['series'].list)]),
+      h('section.jr-section', [h('h3', 'Time-weighted return (cumulative)'), charts.$2]),
       if (j['yearly'].list.length > 1 || j['monthly'].list.isNotEmpty)
         h('div.pf-grid', [
           if (j['yearly'].list.isNotEmpty) h('section.jr-section', [h('h3', 'By year'), _periodTable(j['yearly'].list)]),
@@ -371,7 +411,7 @@ class PortfolioPage {
         ('TWR', true), ('MWR', true), ('End', true),
       ], [
         for (final r in rows)
-          h('tr', [
+          h('tr.pf-row-link', [
             h('td', r['key'].s),
             h('td.num', money(r['start_value'].d, sign: false)),
             h('td.num', money(r['contributions'].d)),
@@ -381,55 +421,81 @@ class PortfolioPage {
             h('td.num.${_cls(r['twr_pct'].d)}', _pct(r['twr_pct'].d)),
             h('td.num', _pct(r['mwr_pct'].d)),
             h('td.num', money(r['end_value'].d, sign: false)),
-          ]),
+          ], {'data-tip': 'Show ${r['key'].s}', 'tabindex': '0'}, {
+            'click': (_) => _zoomTo(r['key'].s),
+            'keydown': (e) {
+              if ((e as KeyboardEvent).key == 'Enter') _zoomTo(r['key'].s);
+            },
+          }),
       ]);
 
-  Element _valueChart(List<J> pts) {
-    if (pts.length < 2) return h('div.muted.small.pad', 'Needs at least two account values in the period.');
-    const w = 900.0, hgt = 200.0, pad = 8.0;
-    final nav = [for (final p in pts) p['nav'].d ?? 0], put = [for (final p in pts) p['contributed'].d ?? 0];
-    var lo = [...nav, ...put].reduce((a, b) => a < b ? a : b), hi = [...nav, ...put].reduce((a, b) => a > b ? a : b);
-    final padY = (hi - lo) * 0.06;
-    lo = lo - padY < 0 && lo >= 0 ? 0 : lo - padY;
-    hi += padY;
-    if (hi - lo < 1e-9) hi = lo + 1;
-    double x(int i) => pad + i / (pts.length - 1) * (w - 2 * pad);
-    double y(double v) => pad + (hi - v) / (hi - lo) * (hgt - 2 * pad);
-    String line(List<double> vs) => [for (var i = 0; i < vs.length; i++) '${x(i)},${y(vs[i])}'].join(' ');
-    final svg = _svg('svg', {'viewBox': '0 0 $w $hgt', 'class': 'pf-chart', 'preserveAspectRatio': 'none'});
-    // the band between the two lines is the investment gain (green above the money put in, red below)
-    final back = [for (var i = pts.length - 1; i >= 0; i--) '${x(i)},${y(put[i])}'].join(' ');
-    svg.append(_svg('polygon', {'points': '${line(nav)} $back', 'class': 'pf-gain ${nav.last >= put.last ? 'up' : 'down'}'}));
-    svg.append(_svg('polyline', {'points': line(put), 'class': 'pf-line-contrib'}));
-    svg.append(_svg('polyline', {'points': line(nav), 'class': 'pf-line-nav'}));
-    return h('div.pf-chart-wrap', [
-      svg,
-      h('div.pf-axis', [
-        h('span', pts.first['date'].s),
-        h('span', '${money(lo, sign: false, digits: 0)} – ${money(hi, sign: false, digits: 0)}'),
-        h('span', pts.last['date'].s),
-      ]),
-    ]);
+  void _zoomTo(String? key) {
+    if (key == null) return;
+    final (a, b) = periodBounds(key);
+    _showRange(a, b);
   }
 
-  Element _twrChart(List<J> pts) {
-    if (pts.length < 2) return h('div.muted.small.pad', 'Needs at least two account values in the period.');
-    const w = 900.0, hgt = 120.0, pad = 6.0;
-    final vs = [for (final p in pts) p['twr_pct'].d ?? 0];
-    var lo = [0.0, ...vs].reduce((a, b) => a < b ? a : b), hi = [0.0, ...vs].reduce((a, b) => a > b ? a : b);
-    if (hi - lo < 1e-9) hi = lo + 1;
-    double x(int i) => pad + i / (vs.length - 1) * (w - 2 * pad);
-    double y(double v) => pad + (hi - v) / (hi - lo) * (hgt - 2 * pad);
-    final svg = _svg('svg', {'viewBox': '0 0 $w $hgt', 'class': 'jr-curve', 'preserveAspectRatio': 'none'});
-    svg.append(_svg('line', {'x1': '0', 'x2': '$w', 'y1': '${y(0)}', 'y2': '${y(0)}', 'class': 'jr-zero'}));
-    svg.append(_svg('polyline', {
-      'points': [for (var i = 0; i < vs.length; i++) '${x(i)},${y(vs[i])}'].join(' '),
-      'class': 'jr-line ${vs.last >= 0 ? 'up' : 'down'}',
-    }));
-    return h('div.pf-chart-wrap', [
-      svg,
-      h('div.pf-axis', [h('span', pts.first['date'].s), h('span', 'now ${pct(vs.last)}'), h('span', pts.last['date'].s)]),
-    ]);
+  /// The account-value chart and the TWR chart; their cursors move together.
+  (Element, Element) _charts2(List<J> pts) {
+    _charts.clear();
+    if (pts.length < 2) {
+      Element none() => h('div.muted.small.pad', 'Needs at least two account values in the period.');
+      return (none(), none());
+    }
+    final dates = [for (final p in pts) p['date'].s ?? ''];
+    final nav = [for (final p in pts) p['nav'].d], put = [for (final p in pts) p['contributed'].d];
+    final twr = [for (final p in pts) p['twr_pct'].d];
+    double? flowAt(int i) => i == 0 || put[i] == null || put[i - 1] == null ? null : put[i]! - put[i - 1]!;
+    double? dayGain(int i) => i == 0 || nav[i] == null || nav[i - 1] == null ? null : nav[i]! - nav[i - 1]! - (flowAt(i) ?? 0);
+    final gain0 = (nav[0] ?? 0) - (put[0] ?? 0);
+    void sync(int? i) {
+      for (final c in _charts) {
+        c.showAt(i);
+      }
+    }
+
+    String axisMoney(double v) => v == 0 ? '\$0' : '${v < 0 ? '−' : ''}\$${compact(v.abs())}';
+    final value = PerfChart(
+      dates: dates,
+      lines: [ChartLine('Money put in', 'pf-line-contrib', put), ChartLine('Account value', 'pf-line-nav', nav)],
+      band: const ChartBand(1, 0),
+      axisLabel: axisMoney,
+      onRange: _showRange,
+      onHover: sync,
+      tip: (i) {
+        final g = nav[i] == null || put[i] == null ? null : nav[i]! - put[i]!;
+        final dg = dayGain(i), f = flowAt(i);
+        final prev = i > 0 ? nav[i - 1] : null;
+        return [
+          ('Account value', money(nav[i], sign: false), null),
+          ('Money put in', money(put[i], sign: false), null),
+          ('Gain (all time)', money(g), _cls(g)),
+          if (i > 0) ('Gain in period', money(g == null ? null : g - gain0), _cls(g == null ? null : g - gain0)),
+          if (dg != null)
+            ('Day', '${money(dg)}${prev != null && prev != 0 ? ' (${pct(dg / prev * 100)})' : ''}', _cls(dg)),
+          if (f != null && f.abs() >= 0.005) (f > 0 ? 'Deposited' : 'Withdrawn', money(f.abs(), sign: false), null),
+        ];
+      },
+    );
+    final ret = PerfChart(
+      dates: dates,
+      lines: [ChartLine('Time-weighted return', 'jr-line ${(twr.last ?? 0) >= 0 ? 'up' : 'down'}', twr)],
+      axisLabel: (v) => '${v.abs() < 1e-9 ? '0' : v.toStringAsFixed(v.abs() >= 10 ? 0 : 1)}%',
+      includeZero: true,
+      height: 150,
+      onRange: _showRange,
+      onHover: sync,
+      tip: (i) {
+        final prev = i > 0 ? twr[i - 1] : null;
+        final day = prev == null || twr[i] == null ? null : ((1 + twr[i]! / 100) / (1 + prev / 100) - 1) * 100;
+        return [
+          ('Return in period', _pct(twr[i]), _cls(twr[i])),
+          if (day != null) ('Day', pct(day), _cls(day)),
+        ];
+      },
+    );
+    _charts.addAll([value, ret]);
+    return (value.root, ret.root);
   }
 
   // ---------------------------------------------------------------- cash flows
@@ -642,12 +708,4 @@ class PortfolioPage {
       if (_tab != 'imports') selectTab('imports');
     }
   }
-}
-
-const _svgNs = 'http://www.w3.org/2000/svg';
-
-Element _svg(String tag, Map<String, String> attrs) {
-  final el = document.createElementNS(_svgNs, tag);
-  attrs.forEach((k, v) => el.setAttribute(k, v));
-  return el;
 }

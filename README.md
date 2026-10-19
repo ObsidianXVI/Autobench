@@ -155,11 +155,14 @@ What you get:
   live are not counted twice. The page shows:
   - **Overview**: account value, positions (live when connected, else from the latest statement),
     cash by currency, and all-time deposits, withdrawals, dividends, tax, interest, fees and commissions.
-  - **Performance** for any period: *start + net deposits + investment gain = end*. Growth (which
+  - **Performance** for a preset period or any date range (type the dates, drag across a chart, or
+    click a year or month row): *start + net deposits + investment gain = end*. Growth (which
     includes your deposits) is kept apart from investment gain, which is split into trading & market
     P&L (realised and the rest) and income & costs. Returns are time-weighted (how the investments
-    did, deposits excluded) and money-weighted (IRR of your own cash flows), with a value-vs-money-put-in
-    chart and yearly and monthly rows.
+    did, deposits excluded; daily-linked like IBKR's own figure) and money-weighted (IRR of your own
+    cash flows). The value-vs-money-put-in and return charts have value and date axes and a shared
+    cursor: hover (or use the arrow keys) for the day's value, money put in, gain, the day's change
+    and any deposit or withdrawal.
   - **Cash flows** and **Imports** (history, remove an import, Flex settings).
 
   For the Flex Query, include: Account Information, Change in NAV, Net Asset Value (NAV) in Base,

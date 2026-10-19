@@ -176,7 +176,9 @@ def parse_flex_xml(text: str) -> dict:
             if amt is None:
                 continue
             fx = _num(c.get("fxRateToBase")) or 1.0
-            day = _date(c.get("dateTime")) or _date(c.get("settleDate")) or _date(c.get("reportDate"))
+            # the booking date: the day the account value (NAV) includes it. dateTime is when it was started,
+            # often the evening before, which would show a deposit as a one-day loss and then a gain
+            day = _date(c.get("reportDate")) or _date(c.get("dateTime")) or _date(c.get("settleDate"))
             kind = cash_kind(c.get("type") or "", amt, c.get("description") or "")
             cid = c.get("transactionID") or _hid(acct, day, c.get("type"), amt, c.get("description"))
             res["cash"].append({"id": f"cash:{cid}", "account": c.get("accountId") or acct, "date": day, "kind": kind,
@@ -194,7 +196,7 @@ def parse_flex_xml(text: str) -> dict:
             value += (_num(t.get("cashTransfer")) or 0) * fx
             if not value:
                 continue
-            day = _date(t.get("dateTime")) or _date(t.get("date")) or _date(t.get("reportDate"))
+            day = _date(t.get("reportDate")) or _date(t.get("dateTime")) or _date(t.get("date"))
             sym = (t.get("symbol") or "").strip() or None
             tid = t.get("transactionID") or _hid(acct, day, sym, t.get("quantity"), value, direction)
             res["cash"].append({"id": f"xfer:{tid}", "account": t.get("accountId") or acct, "date": day, "kind": "transfer",

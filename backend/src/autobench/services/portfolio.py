@@ -16,7 +16,6 @@ app's own snapshots of the connected account."""
 from __future__ import annotations
 
 import logging
-import os
 import time
 import urllib.parse
 import urllib.request
@@ -110,7 +109,10 @@ def import_statement(text: str, filename: str | None = None, source: str = "uplo
         for c in st["cash"]:
             if not c["date"]:
                 continue
-            if s.get(db.CashFlowRow, c["id"]) is not None:
+            known = s.get(db.CashFlowRow, c["id"])
+            if known is not None:  # keep the row, but take the newer statement's values (e.g. a corrected date)
+                for k, v in c.items():
+                    setattr(known, k, v)
                 counts["cash_known"] += 1
                 continue
             s.add(db.CashFlowRow(**c, import_id=iid))
@@ -265,10 +267,13 @@ def _xirr(flows: list[tuple[str, float]]) -> float | None:
 
 
 def _dietz(v0: float, v1: float, d0: str, d1: str, flows: list[tuple[str, float]]) -> float | None:
-    """Modified Dietz return over (d0, d1]; a flow on day d is in the account for that whole day."""
-    span = max(_days(d0, d1), 1)
+    """Modified Dietz return over (d0, d1]. Flows are dated by the day the NAV first includes them, so between
+    consecutive trading days (gaps of up to a long weekend) they count from the start of the interval: IBKR's
+    own daily-linked TWR, which this reproduces. Over longer gaps (sparse NAV, e.g. an Activity Statement's start
+    and end values) each flow is weighted by the share of the interval it was in the account."""
+    span = _days(d0, d1)
     cf = sum(v for _, v in flows)
-    weighted = sum(v * (_days(d, d1) + 1) / span for d, v in flows)
+    weighted = cf if span <= 5 else sum(v * (_days(d, d1) + 1) / span for d, v in flows)
     denom = v0 + weighted
     if denom <= 1e-9:
         return None
@@ -416,8 +421,9 @@ def performance(account: str | None = None, period: str | None = "all", start: s
     first = h.nav[0][0] if h.nav else None
     s, e = _range(period, start, end, first)
     summary = h.period(s, e)
+    base = (summary["start"] if summary else None) or s  # the chart starts at the summary's start value
     return {"account": account, "period": period, "from": s, "to": e, "summary": summary,
-            "series": h.series(s, e), "monthly": h.breakdown("month", s, e), "yearly": h.breakdown("year", s, e),
+            "series": h.series(base, e), "monthly": h.breakdown("month", s, e), "yearly": h.breakdown("year", s, e),
             "statement": _statement_check(account, summary)}
 
 
@@ -483,10 +489,18 @@ def _flex_state() -> dict:
     return db.state_get(FLEX_KEY, {}) or {}
 
 
+def _flex_env() -> tuple[str, str]:
+    """Token and query id from the environment or .env (they override what the UI saved)."""
+    from ..config import get_settings
+
+    cfg = get_settings()
+    return cfg.autobench_ibkr_flex_token.strip(), cfg.autobench_ibkr_flex_query.strip()
+
+
 def flex_settings() -> dict:
     """What the UI may see: never the token itself."""
     st = _flex_state()
-    env_token, env_query = os.environ.get("AUTOBENCH_IBKR_FLEX_TOKEN"), os.environ.get("AUTOBENCH_IBKR_FLEX_QUERY")
+    env_token, env_query = _flex_env()
     return {"has_token": bool(env_token or st.get("token")), "token_from_env": bool(env_token),
             "query_id": env_query or st.get("query_id"), "auto_sync": bool(st.get("auto_sync")),
             "last_sync": st.get("last_sync"), "last_error": st.get("last_error"), "last_import": st.get("last_import")}
@@ -538,8 +552,9 @@ def flex_download(token: str, query_id: str, get=_http_get, wait=time.sleep, tri
 
 def flex_sync(get=_http_get, wait=time.sleep) -> dict:
     cfg = _flex_state()
-    token = os.environ.get("AUTOBENCH_IBKR_FLEX_TOKEN") or cfg.get("token")
-    query_id = os.environ.get("AUTOBENCH_IBKR_FLEX_QUERY") or cfg.get("query_id")
+    env_token, env_query = _flex_env()
+    token = env_token or cfg.get("token")
+    query_id = env_query or cfg.get("query_id")
     if not token or not query_id:
         raise StatementError("Set the Flex token and query id first")
     cfg["last_sync"] = datetime.now(UTC).isoformat()

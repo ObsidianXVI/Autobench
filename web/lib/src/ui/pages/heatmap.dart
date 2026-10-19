@@ -82,7 +82,7 @@ class HeatmapPage {
           _renderControls();
           redraw();
         }),
-      ], x: e.clientX.toDouble(), y: e.clientY.toDouble());
+      ], x: clientXY(e).$1, y: clientXY(e).$2);
     }).toJS);
     _renderControls();
   }

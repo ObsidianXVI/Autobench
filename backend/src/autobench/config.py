@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     ibkr_client_id: int = 7
     ibkr_account: str = ""  # preferred account when the login holds several; the app can switch it
     autobench_allow_live_trading: bool = False
+    # IBKR Flex Web Service (statement downloads); may also be entered in the Portfolio page
+    autobench_ibkr_flex_token: str = ""
+    autobench_ibkr_flex_query: str = ""
 
     @property
     def alpaca_enabled(self) -> bool:

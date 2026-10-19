@@ -1183,7 +1183,7 @@ class ChartPanel {
   // ---------------------------------------------------------------- context menu
 
   void _contextMenu(double x, double y, double? price, MouseEvent e) {
-    final cx = e.clientX.toDouble(), cy = e.clientY.toDouble();
+    final (cx, cy) = clientXY(e);
     final th = y < engine.mainHeight ? trading.hitAt(x, y) : null;
     if (th != null && th.kind != 'fill') {
       if (th.order != null) {

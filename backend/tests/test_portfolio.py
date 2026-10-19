@@ -49,7 +49,8 @@ FLEX = """<FlexQueryResponse queryName="history" type="AF">
   <CashTransaction accountId="U1234567" type="Deposits/Withdrawals" currency="USD" fxRateToBase="1" amount="10000"
     dateTime="20240102" description="CASH RECEIPTS / ELECTRONIC FUND TRANSFERS" transactionID="901" levelOfDetail="DETAIL" />
   <CashTransaction accountId="U1234567" type="Deposits/Withdrawals" currency="USD" fxRateToBase="1" amount="5000"
-    dateTime="20240104" description="CASH RECEIPTS / ELECTRONIC FUND TRANSFERS" transactionID="902" levelOfDetail="DETAIL" />
+    dateTime="20240103;221500" reportDate="20240104" description="CASH RECEIPTS / ELECTRONIC FUND TRANSFERS" transactionID="902"
+    levelOfDetail="DETAIL" />
   <CashTransaction accountId="U1234567" type="Dividends" currency="USD" fxRateToBase="1" amount="50" symbol="MSFT"
     dateTime="20240105" description="MSFT CASH DIVIDEND" transactionID="903" levelOfDetail="DETAIL" />
   <CashTransaction accountId="U1234567" type="Withholding Tax" currency="USD" fxRateToBase="1" amount="-7.5" symbol="MSFT"
@@ -223,8 +224,6 @@ def test_delete_import_and_write_guard(client):
 
 
 def test_flex_web_service_sync_keeps_the_token_private(client, monkeypatch):
-    monkeypatch.delenv("AUTOBENCH_IBKR_FLEX_TOKEN", raising=False)
-    monkeypatch.delenv("AUTOBENCH_IBKR_FLEX_QUERY", raising=False)
     r = client.post("/api/portfolio/flex", json={"token": "secret-token-123", "query_id": "98765"}, headers=H).json()
     assert r["has_token"] and r["query_id"] == "98765" and "secret-token-123" not in json.dumps(r)
     assert "secret-token-123" not in client.get("/api/portfolio/flex").text
@@ -273,3 +272,16 @@ async def test_agent_reads_account_history(client):
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
+
+
+def test_flows_are_dated_by_when_the_account_value_includes_them():
+    """IBKR stamps a deposit with the time it was started (often the evening before); the NAV includes it on
+    reportDate. Dating it by dateTime would show a one-day loss then a gain and skew the time-weighted return."""
+    early = FLEX.replace('reportDate="20240104" ', "")
+    portfolio.import_statement(early, "early.xml", "upload")
+    assert portfolio.performance("U1234567", "all")["summary"]["twr_pct"] != 2.9
+    r = portfolio.import_statement(FLEX, "fixed.xml", "upload")  # a later statement corrects the stored date
+    assert r["counts"].get("cash", 0) == 0 and r["counts"]["cash_known"] > 0
+    assert [f["date"] for f in portfolio.cash_flows("U1234567", kind="deposit")] == ["2024-01-04", "2024-01-02"]
+    assert portfolio.performance("U1234567", "all")["summary"]["twr_pct"] == 2.9
+

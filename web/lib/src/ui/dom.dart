@@ -1,5 +1,6 @@
 // A small DOM builder: h('div.card.small', [children], on: {'click': ...}).
 import 'dart:js_interop';
+import 'dart:js_interop_unsafe';
 
 import 'package:web/web.dart';
 
@@ -105,4 +106,11 @@ extension Hidden on HTMLElement {
 List<HTMLElement> qsa(Element root, String selector) {
   final nodes = root.querySelectorAll(selector);
   return [for (var i = 0; i < nodes.length; i++) nodes.item(i)! as HTMLElement];
+}
+
+/// The pointer's viewport position. Read as doubles: package:web types clientX/Y as int, but browsers
+/// report fractional pixels (zoom, high-DPI, pointer events), and the int cast would throw.
+(double, double) clientXY(Event e) {
+  final o = e as JSObject;
+  return ((o['clientX'] as JSNumber).toDartDouble, (o['clientY'] as JSNumber).toDartDouble);
 }

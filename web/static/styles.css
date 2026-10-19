@@ -905,8 +905,6 @@ button.panel-title:hover { background: var(--hover); }
 .pf-equation { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; padding: 10px 12px; background: var(--panel-2);
   border-radius: var(--radius); font-variant-numeric: tabular-nums; }
 .pf-equation .op { color: var(--text-muted); font-weight: 600; }
-.pf-chart-wrap { display: grid; gap: 4px; }
-.pf-chart { width: 100%; height: 200px; display: block; }
 .pf-line-nav { fill: none; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
 .pf-line-contrib { fill: none; stroke: #38bdf8; stroke-width: 1.5; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
 .pf-gain { stroke: none; }
@@ -914,7 +912,46 @@ button.panel-title:hover { background: var(--hover); }
 .pf-gain.down { fill: color-mix(in srgb, var(--down) 22%, transparent); }
 .portfolio-page .tr-head select { width: auto; max-width: 260px; }
 .pf-drop { margin-top: 4px; }
-.pf-axis { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+/* interactive performance charts (portfolio_chart.dart) */
+.pc { display: grid; grid-template-columns: minmax(0, 1fr) 62px; grid-template-rows: auto 20px auto; }
+.pc-plot { position: relative; grid-column: 1; grid-row: 1; background: var(--chart-bg, var(--panel-2)); border-radius: var(--radius-sm);
+  cursor: crosshair; touch-action: pan-y; user-select: none; outline: none; }
+.pc-plot:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.pc-svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; overflow: visible; }
+.pc-svg .jr-line { fill: none; stroke-width: 1.8; vector-effect: non-scaling-stroke; }
+.pc-svg .jr-line.up { stroke: var(--up); }
+.pc-svg .jr-line.down { stroke: var(--down); }
+.pc-grid { stroke: var(--chart-grid, var(--border)); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.pc-grid.v { stroke-dasharray: 2 4; }
+.pc-grid.zero { stroke: var(--border-strong); stroke-dasharray: 4 3; }
+.pc-yaxis, .pc-xaxis { position: relative; font-size: 11px; color: var(--chart-label, var(--text-muted)); font-variant-numeric: tabular-nums; }
+.pc-yaxis { grid-column: 2; grid-row: 1; }
+.pc-yaxis span { position: absolute; left: 8px; transform: translateY(-50%); white-space: nowrap; }
+.pc-xaxis { grid-column: 1; grid-row: 2; }
+.pc-xaxis span { position: absolute; top: 4px; transform: translateX(-50%); white-space: nowrap; }
+.pc-hint { grid-column: 1 / -1; grid-row: 3; padding-top: 2px; }
+.pc-cross { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--chart-crosshair, var(--text-muted)); pointer-events: none; }
+.pc-dot { position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%; border: 2px solid var(--panel);
+  pointer-events: none; background: var(--text-muted); }
+.pc-dot.pf-line-nav { background: var(--accent); }
+.pc-dot.pf-line-contrib { background: #38bdf8; }
+.pc-dot.up { background: var(--up); }
+.pc-dot.down { background: var(--down); }
+.pc-tip { position: absolute; top: 8px; margin: 0 10px; min-width: 190px; padding: 8px 10px; display: grid; gap: 3px; font-size: 12px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: var(--shadow); pointer-events: none;
+  z-index: 2; }
+.pc-tip-date { font-weight: 600; margin-bottom: 2px; }
+.pc-tip-row { display: flex; justify-content: space-between; gap: 14px; }
+.pc-tip-row b { font-variant-numeric: tabular-nums; font-weight: 600; }
+.pc-sel { position: absolute; top: 0; bottom: 0; background: var(--accent-soft); border-left: 1px solid var(--accent);
+  border-right: 1px solid var(--accent); pointer-events: none; }
+.pc [hidden] { display: none; }
+.pf-range { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: var(--radius-sm); }
+.pf-range.on { box-shadow: 0 0 0 1px var(--accent); }
+.pf-date { width: auto; }
+.portfolio-page .tr-tools { flex-wrap: wrap; }
+.pf-row-link { cursor: pointer; }
+.pf-row-link:hover, .pf-row-link:focus-visible { background: var(--hover); outline: none; }
 .pf-cash { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .pf-desc { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pf-drop { display: grid; justify-items: center; gap: 6px; padding: 22px 16px; border: 1.5px dashed var(--border); border-radius: var(--radius);

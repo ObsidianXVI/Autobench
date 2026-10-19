@@ -2,6 +2,7 @@
 // Run: dart run test/core_test.dart   (no test framework needed; exits non-zero on failure)
 import 'dart:io';
 
+import '../lib/src/core/chart_ticks.dart';
 import '../lib/src/core/chartmath.dart';
 import '../lib/src/core/format.dart';
 import '../lib/src/core/geometry.dart';
@@ -82,6 +83,18 @@ Future<void> main() async {
     check('degenerate', niceTicks(5, 5, 4).values, []);
     check('axis price ≥2 decimals', axisPrice(250, 10), '250.00');
     check('axis price finer step', axisPrice(0.0125, 0.0005), '0.0125');
+  });
+
+  group('portfolio chart dates', () {
+    String labels(String a, String b) => dateTicks(dayUtc(a), dayUtc(b)).map((t) => t.$2).join(',');
+    check('days', labels('2026-10-12', '2026-10-16'), '12 Oct,13 Oct,14 Oct,15 Oct,16 Oct');
+    check('weeks start on Monday', labels('2026-09-16', '2026-10-19'), '21 Sep,28 Sep,5 Oct,12 Oct,19 Oct');
+    check('months, with the year at January', labels('2025-10-16', '2026-03-20'), 'Nov,Dec,Jan 2026,Feb,Mar');
+    check('quarters', labels('2024-02-10', '2026-01-05'), 'Apr,Jul,Oct,Jan 2025,Apr,Jul,Oct,Jan 2026');
+    check('years', labels('2019-06-01', '2026-10-19'), '2020,2021,2022,2023,2024,2025,2026');
+    check('long date', longDate('2026-10-19'), 'Mon 19 Oct 2026');
+    check('year bounds', periodBounds('2025'), ('2025-01-01', '2025-12-31'));
+    check('month bounds', periodBounds('2024-02'), ('2024-02-01', '2024-02-29'));
   });
 
   group('time ticks', () {

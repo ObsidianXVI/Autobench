@@ -585,7 +585,7 @@ class ScreenerPage {
             'contextmenu': (e) {
               e.preventDefault();
               final me = e as MouseEvent;
-              _rowMenu(r['symbol'].s!, me.clientX.toDouble(), me.clientY.toDouble());
+              _rowMenu(r['symbol'].s!, clientXY(me).$1, clientXY(me).$2);
             },
           }),
       ]),

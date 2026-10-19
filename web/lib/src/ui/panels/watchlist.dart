@@ -245,7 +245,7 @@ class WatchlistPanel {
             final me = e as MouseEvent;
             showMenu([
               MenuItem('Remove section', iconName: 'trash', onSelect: () => _update(remove: [s])),
-            ], x: me.clientX.toDouble(), y: me.clientY.toDouble());
+            ], x: clientXY(me).$1, y: clientXY(me).$2);
           },
         }));
         continue;
@@ -293,7 +293,7 @@ class WatchlistPanel {
       'contextmenu': (e) {
         e.preventDefault();
         final me = e as MouseEvent;
-        _rowMenu(s, me.clientX.toDouble(), me.clientY.toDouble());
+        _rowMenu(s, clientXY(me).$1, clientXY(me).$2);
       },
       'dragstart': (e) {
         _dragSym = s;
@@ -373,14 +373,14 @@ class WatchlistPanel {
   void _bindSplit() {
     double? startY, startH;
     _split.addEventListener('pointerdown', ((PointerEvent e) {
-      startY = e.clientY.toDouble();
+      startY = clientXY(e).$2;
       startH = _detailsHeight;
       _split.setPointerCapture(e.pointerId);
     }).toJS);
     _split.addEventListener('pointermove', ((PointerEvent e) {
       if (startY == null) return;
       final total = root.getBoundingClientRect().height;
-      _detailsHeight = (startH! - (e.clientY - startY!)).clamp(0.0, total - 120);
+      _detailsHeight = (startH! - (clientXY(e).$2 - startY!)).clamp(0.0, total - 120);
       details.root.style.height = '${_detailsHeight}px';
     }).toJS);
     _split.addEventListener('pointerup', ((PointerEvent e) {

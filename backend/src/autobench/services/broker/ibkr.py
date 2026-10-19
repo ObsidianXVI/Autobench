@@ -153,6 +153,7 @@ class IbkrBroker(Broker):
         self._failures = 0
         self._contracts: dict[str, Any] = {}
         self._order_messages: dict[str, str] = {}
+        self._pnl_singles: dict[int, Any] = {}
         self._ready = threading.Event()
 
     # --- loop plumbing ----------------------------------------------------------------------------
@@ -264,10 +265,32 @@ class IbkrBroker(Broker):
                 self.ib.cancelPnL(old)
             except Exception:
                 pass
+        for sub in self._pnl_singles.values():
+            try:
+                self.ib.cancelPnLSingle(sub.account, sub.modelCode, sub.conId)
+            except Exception:
+                pass
+        self._pnl_singles.clear()
         if len(self._accounts) > 1 or (old and old != account):
-            await asyncio.wait_for(self.ib.reqAccountUpdatesAsync(account), 10)
+            try:
+                await asyncio.wait_for(self.ib.reqAccountUpdatesAsync(account), 10)
+            except asyncio.TimeoutError:  # some multi-account logins never finish the download; values still stream
+                log.info("IBKR: account download for %s did not finish; using position + P&L subscriptions", account)
         if not self.ib.pnl(account):
             self.ib.reqPnL(account)
+        try:
+            await asyncio.wait_for(self.ib.reqPositionsAsync(), 10)
+        except asyncio.TimeoutError:
+            log.info("IBKR: positions request timed out")
+        self._watch_positions()
+
+    def _watch_positions(self) -> None:
+        """Per-position P&L subscriptions (value, unrealized) for the selected account. They stand in for the
+        portfolio stream, which IBKR leaves empty for some logins that hold several accounts."""
+        for p in self.ib.positions(self._account or ""):
+            con = p.contract.conId
+            if p.contract.secType == "STK" and p.position and con not in self._pnl_singles:
+                self._pnl_singles[con] = self.ib.reqPnLSingle(p.account, "", con)
 
     def select_account(self, account: str) -> None:
         self._require()
@@ -303,10 +326,12 @@ class IbkrBroker(Broker):
         ib.commissionReportEvent += lambda trade, fill, report: self.emit("fill", map_fill(fill))
         ib.pnlEvent += lambda pnl: self.emit("account", None)
         ib.updatePortfolioEvent += lambda item: self.emit("account", None)
+        ib.positionEvent += lambda pos: (self._watch_positions(), self.emit("account", None))
         ib.disconnectedEvent += self._on_disconnect
         ib.errorEvent += self._on_error
 
     def _on_disconnect(self) -> None:
+        self._pnl_singles.clear()  # subscriptions end with the connection
         if self._want:
             self._message = "Connection lost; reconnecting…"
         self.emit("status", self.status())
@@ -346,8 +371,25 @@ class IbkrBroker(Broker):
 
     def positions(self) -> list[dict]:
         self._require()
-        return self._call(lambda: [map_position(p) for p in self.ib.portfolio(self._account or "")
-                                   if p.position and p.contract.secType == "STK"])
+
+        def read():
+            items = [p for p in self.ib.portfolio(self._account or "") if p.position and p.contract.secType == "STK"]
+            if items:
+                return [map_position(p) for p in items]
+            self._watch_positions()
+            out = []
+            for p in self.ib.positions(self._account or ""):
+                if not p.position or p.contract.secType != "STK":
+                    continue
+                pnl = self._pnl_singles.get(p.contract.conId)
+                value = _num(pnl.value) if pnl is not None else None
+                out.append({"symbol": to_symbol(p.contract.symbol), "qty": float(p.position), "avg_cost": float(p.avgCost),
+                            "market_price": value / float(p.position) if value is not None else None,
+                            "market_value": value, "unrealized_pnl": _num(pnl.unrealizedPnL) if pnl is not None else None,
+                            "realized_pnl": _num(pnl.realizedPnL) if pnl is not None else None})
+            return out
+
+        return self._call(read)
 
     def orders(self, include_done: bool = False) -> list[dict]:
         self._require()

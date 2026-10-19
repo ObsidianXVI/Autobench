@@ -474,13 +474,13 @@ async def test_switching_accounts(client):
 
 
 def test_ibkr_account_selection_against_a_fake_ib_client():
-    from ib_async import AccountValue, Fill, Execution, Order, OrderStatus, PnL, PortfolioItem, Trade
+    from ib_async import AccountValue, Fill, Execution, Order, OrderStatus, PnL, PnLSingle, PortfolioItem, Position, Trade
 
     from autobench.services.broker.ibkr import IbkrBroker
 
     class FakeIB:
         def __init__(self):
-            self.connected, self.subscribed, self.pnl_subs = False, [], []
+            self.connected, self.subscribed, self.pnl_subs, self.single_subs, self.no_portfolio = False, [], [], [], False
             stk = SimpleNamespace(symbol="AAPL", secType="STK")
             self._trades = [Trade(contract=stk, order=Order(orderId=i, account=a, action="BUY", totalQuantity=1, orderType="LMT"),
                                   orderStatus=OrderStatus(orderId=i, status="Submitted"))
@@ -525,9 +525,27 @@ def test_ibkr_account_selection_against_a_fake_ib_client():
             return [AccountValue(account, "NetLiquidation", "1000" if account == "DU1" else "2000", "USD", "")]
 
         def portfolio(self, account=""):
+            if self.no_portfolio:  # some multi-account logins never stream portfolio items
+                return []
             return [PortfolioItem(contract=SimpleNamespace(symbol="MSFT" if account == "DU2" else "AAPL", secType="STK"),
                                   position=1, marketPrice=1, marketValue=1, averageCost=1, unrealizedPNL=0, realizedPNL=0,
                                   account=account)]
+
+        async def reqPositionsAsync(self):
+            return self.positions()
+
+        def positions(self, account=""):
+            ps = [Position("DU1", SimpleNamespace(symbol="AAPL", secType="STK", conId=11), 3, 100.0),
+                  Position("DU2", SimpleNamespace(symbol="BRK B", secType="STK", conId=12), 2, 400.0)]
+            return [p for p in ps if not account or p.account == account]
+
+        def reqPnLSingle(self, account, model, con_id):
+            self.single_subs.append((account, con_id))
+            return PnLSingle(account=account, conId=con_id, value=330.0 if con_id == 11 else 820.0,
+                             unrealizedPnL=30.0 if con_id == 11 else 20.0, realizedPnL=0.0)
+
+        def cancelPnLSingle(self, account, model, con_id):
+            self.single_subs.remove((account, con_id))
 
         def disconnect(self):
             self.connected = False
@@ -546,6 +564,14 @@ def test_ibkr_account_selection_against_a_fake_ib_client():
         b.select_account("DU1")
         assert fake.subscribed == ["DU2", "DU1"] and fake.pnl_subs == ["DU1"]
         assert [o["id"] for o in b.orders()] == ["1"] and b.account()["net_liquidation"] == 1000
+        # no portfolio stream: positions come from the positions list plus per-position P&L
+        fake.no_portfolio = True
+        assert b.positions() == [{"symbol": "AAPL", "qty": 3.0, "avg_cost": 100.0, "market_price": 110.0,
+                                  "market_value": 330.0, "unrealized_pnl": 30.0, "realized_pnl": 0.0}]
+        b.select_account("DU2")
+        assert fake.single_subs == [("DU2", 12)] and b.positions()[0]["symbol"] == "BRK.B"
+        b.select_account("DU1")
+        fake.no_portfolio = False
         with pytest.raises(ValueError, match="not in this IBKR login"):
             b.select_account("U999")
         # a saved account that this login does not have falls back to the first one
