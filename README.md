@@ -22,15 +22,20 @@ recommendations are recorded and later graded against real prices.
 
 ```bash
 cp .env.example .env            # add ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY
-scripts/start.sh                # UI + API: http://127.0.0.1:8000 · MCP: http://127.0.0.1:8000/mcp
-scripts/status.sh               # is it running, on which port
-scripts/stop.sh                 # shut it down
+ln -sf "$PWD/scripts/autobench" ~/.local/bin/autobench   # once: puts `autobench` on your PATH
+autobench start                 # UI + API: http://127.0.0.1:8000 · MCP: http://127.0.0.1:8000/mcp
+autobench status                # is it running, on which port
+autobench logs                  # follow the server log
+autobench restart               # stop + start
+autobench stop                  # shut it down
 ```
 
-`start.sh` sets up `backend/.venv` on first run, rebuilds the web UI when `web/` sources changed,
-starts the server in the background (logs in `backend/data/autobench.log`) and waits until it
-answers. Options: `--port N`, `--rebuild` (force a UI build) and `--fg` (run in the foreground).
-Everything (UI, REST API, MCP and the background jobs) runs in that one process.
+`autobench start` sets up `backend/.venv` on first run, rebuilds the web UI when `web/` sources
+changed, starts the server in the background (logs in `backend/data/autobench.log`) and waits until
+it answers. Options: `--port N`, `--rebuild` (force a UI build) and `--fg` (run in the foreground).
+Everything (UI, REST API, MCP and the background jobs) runs in that one process. `autobench serve`
+and `autobench mcp-stdio` pass through to the Python CLI; without the PATH link, use
+`scripts/autobench <command>`.
 
 Manual equivalent:
 

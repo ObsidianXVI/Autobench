@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# The `autobench` command: app lifecycle (start/stop/status/restart/logs) plus the Python CLI (serve, mcp-stdio).
+# Link it onto your PATH:  ln -sf "$PWD/scripts/autobench" ~/.local/bin/autobench
+set -euo pipefail
+SELF="${BASH_SOURCE[0]}"
+while [[ -L "$SELF" ]]; do t="$(readlink "$SELF")"; [[ "$t" == /* ]] && SELF="$t" || SELF="$(dirname "$SELF")/$t"; done
+DIR="$(cd "$(dirname "$SELF")" && pwd)"
+source "$DIR/_common.sh"
+
+usage() {
+  cat <<USAGE
+usage: autobench <command> [options]
+
+  start [--port N] [--rebuild] [--fg]   start the app in the background (web UI + API + MCP)
+  stop [--port N]                       stop it
+  restart [start options]               stop, then start
+  status [--port N]                     is it running, where
+  logs [-n N]                           follow the server log (Ctrl-C to quit)
+  serve [--host H] [--port N]           run the server in the foreground (no setup or UI build)
+  mcp-stdio                             run the MCP server over stdio (for MCP clients without HTTP)
+
+Web UI http://127.0.0.1:8000 · MCP http://127.0.0.1:8000/mcp · repo $ROOT
+USAGE
+}
+
+cmd="${1:-help}"
+[[ $# -gt 0 ]] && shift
+case "$cmd" in
+  start)   exec "$DIR/start.sh" "$@" ;;
+  stop)    exec "$DIR/stop.sh" "$@" ;;
+  status)  exec "$DIR/status.sh" "$@" ;;
+  restart)
+    port_args=()
+    for ((i = 1; i <= $#; i++)); do [[ "${!i}" == "--port" ]] && { j=$((i + 1)); port_args=(--port "${!j}"); }; done
+    "$DIR/stop.sh" ${port_args[@]+"${port_args[@]}"}
+    exec "$DIR/start.sh" "$@" ;;
+  logs)
+    [[ -f "$LOG_FILE" ]] || { echo "No log yet ($LOG_FILE). Start the app with: autobench start"; exit 1; }
+    n=50; [[ "${1:-}" == "-n" ]] && n="${2:-50}"
+    exec tail -n "$n" -f "$LOG_FILE" ;;
+  help|-h|--help) usage ;;
+  serve|mcp-stdio)
+    if [[ ! -x "$VENV/bin/autobench" ]]; then
+      echo "The Python environment is not set up yet; run: autobench start" >&2
+      exit 1
+    fi
+    exec "$VENV/bin/autobench" "$cmd" "$@" ;;
+  *) echo "autobench: unknown command '$cmd'" >&2; usage >&2; exit 2 ;;
+esac

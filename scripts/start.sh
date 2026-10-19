@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start Autobench in the background: web UI + REST API + MCP server + background jobs (one process).
-#   scripts/start.sh [--port N] [--rebuild] [--fg]
+#   autobench start [--port N] [--rebuild] [--fg]   (or scripts/start.sh)
 #     --rebuild  force a fresh web UI build (otherwise it rebuilds only when web/ sources changed)
 #     --fg       run in the foreground (Ctrl-C to stop) instead of in the background
 set -euo pipefail
@@ -22,16 +22,16 @@ done
 PORT="${PORT:-$(default_port)}"
 
 if pid="$(running_pid)"; then
-  echo "Autobench is already running (pid $pid). Use scripts/stop.sh first, or scripts/status.sh."
+  echo "Autobench is already running (pid $pid). Use 'autobench stop' or 'autobench restart'."
   exit 0
 fi
 if pid="$(port_pid "$PORT")"; then
   echo "An Autobench server is already listening on port $PORT (pid $pid, not started by this script)."
-  echo "Stop it with: scripts/stop.sh --port $PORT"
+  echo "Stop it with: autobench stop --port $PORT"
   exit 1
 fi
 if lsof -ti "tcp:$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "Port $PORT is in use by another program. Pick another: scripts/start.sh --port 8001" >&2
+  echo "Port $PORT is in use by another program. Pick another: autobench start --port 8001" >&2
   exit 1
 fi
 

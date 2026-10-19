@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stop the Autobench server started by scripts/start.sh (or one listening on --port N).
+# Stop the Autobench server started by 'autobench start' (or one listening on --port N).
 set -euo pipefail
 # resolve symlinks (e.g. ~/.local/bin/autobench-start) to find the repo
 SELF="${BASH_SOURCE[0]}"
