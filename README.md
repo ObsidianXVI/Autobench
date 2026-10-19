@@ -37,6 +37,15 @@ part of the codebase, and its only dependency is `package:web`. For UI developme
   bars, line, area and Heikin-Ashi, regular/log/percent scales, compare overlays, earnings markers and
   41 indicators with per-pane legends (hide, settings, remove). Drag the price or time axis to scale,
   drag pane separators, double-click the price axis to auto-scale. Layouts save and load by name.
+- **Layers, remembered per symbol**: each symbol's chart is a stack of layers. A layer holds series
+  (the price chart, volume bars, indicators, other symbols as a line, area or candles, in the main
+  pane, their own pane or another item's pane) and drawings. Layers can be shown/hidden, locked,
+  renamed, duplicated, reordered and deleted, and rows dragged between them in the Layers panel. New
+  items and drawings go to the active layer; the agent's drawings go to an "Agent" layer. "Save as
+  default" makes a symbol's layers the template for symbols you have not set up yet.
+- **State**: layouts, the open page and panels, zoom, intervals and every preference (theme, grid,
+  colors, favorite intervals, sorting, filters) are saved to the server, mirrored to localStorage
+  and flushed when the tab is hidden, so a reload or another browser picks up where you left off.
 - **Drawing tools** (left bar): trend line, ray, extended and horizontal/vertical lines, parallel
   channel, Fibonacci, rectangle, arrow, text, callout, marker, measure and long/short positions. They
   have a magnet (snap to OHLC), stay-in-drawing mode and lock/hide-all. Select a drawing to drag it or
@@ -48,7 +57,7 @@ part of the codebase, and its only dependency is `package:web`. For UI developme
   for context actions.
 - **Right dock**: watchlists (sections, sorting, live quotes, keyboard navigation, drag to reorder)
   with symbol details below, plus alerts, news, the agent's activity and graded calls, notes, and
-  an object tree.
+  the Layers panel.
 - **Screener**: FinViz-style dropdown filters (descriptive, valuation, financial, performance,
   technical), a filter-expression bar (`pe < 25 and sales_qoq > 15 and sma200_pct > 0`), preset
   signals and screens, column views, chart previews on hover, a Charts tile view, saved screens, CSV

@@ -69,4 +69,8 @@ web/                Dart web UI compiled to JS with dart2js (only dependency: pa
   dart analyze does not catch this, dart2js does); `.then(v, onError: (_) {})` on a non-nullable future
   throws at runtime – use `attempt()` from api.dart. When checking a rebuilt UI in a browser, reload with
   a query string: a hash-only navigation keeps the old bundle.
+- Chart layers: per-symbol configs live in state rows `chartcfg:<SYM>` (`_default` = template), served by
+  `/api/chart-config/{symbol}`; the model and pane assignment are in `web/lib/src/core/layers.dart`.
+  Drawings carry `layer` (NULL = main; agent drawings default to `agent`). UI prefs/state: `/api/ui-state`
+  (v3, `savedAt`), mirrored to localStorage; `store.flush()` beacons on pagehide.
 - Config via `.env` at the repo root (see `.env.example`). Never commit `.env`.
