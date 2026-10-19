@@ -21,3 +21,7 @@ web/build/
 .DS_Store
 .idea/
 .vscode/
+
+# Run scripts
+backend/data/autobench.pid
+backend/data/autobench.log

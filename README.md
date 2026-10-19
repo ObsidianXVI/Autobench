@@ -22,6 +22,19 @@ recommendations are recorded and later graded against real prices.
 
 ```bash
 cp .env.example .env            # add ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY
+scripts/start.sh                # UI + API: http://127.0.0.1:8000 · MCP: http://127.0.0.1:8000/mcp
+scripts/status.sh               # is it running, on which port
+scripts/stop.sh                 # shut it down
+```
+
+`start.sh` sets up `backend/.venv` on first run, rebuilds the web UI when `web/` sources changed,
+starts the server in the background (logs in `backend/data/autobench.log`) and waits until it
+answers. Options: `--port N`, `--rebuild` (force a UI build) and `--fg` (run in the foreground).
+Everything (UI, REST API, MCP and the background jobs) runs in that one process.
+
+Manual equivalent:
+
+```bash
 (cd web && dart pub get && dart run tool/build.dart)   # build the UI once (needs the Dart SDK)
 cd backend
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
