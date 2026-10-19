@@ -6,6 +6,7 @@ import pytest
 
 os.environ["AUTOBENCH_BAR_PROVIDER"] = "fake"
 os.environ["AUTOBENCH_BACKGROUND"] = "0"  # no scheduler thread in unit tests
+os.environ["AUTOBENCH_BROKER"] = "sim"  # never reach a real IB Gateway from tests
 os.environ.pop("ALPACA_API_KEY_ID", None)
 os.environ.pop("ALPACA_API_KEY", None)
 
@@ -29,6 +30,9 @@ def fresh_env(tmp_path, monkeypatch, request):
     reset_providers()
     db.init_db(f"sqlite:///{tmp_path / 'test.db'}")
     yield
+    from autobench.services.trading import trading
+
+    trading.stop()
     get_settings.cache_clear()
     reset_providers()
 

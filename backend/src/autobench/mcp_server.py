@@ -15,13 +15,14 @@ from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, Field, ValidationError
 
 from . import guides
-from .schemas import AnalysisIn, AnnotationIn, AnnotationPatch, ChartView, NoteIn, Point, Style
+from .schemas import AnalysisIn, AnnotationIn, AnnotationPatch, ChartView, ClosePosition, NoteIn, OrderSpec, Point, Style
 from .services import analyses, annotations, backtest, filings, fundamentals, levels, market, market_context
 from .services import news as news_svc
 from .services import options as options_svc
 from .services import alerts as alerts_svc
 from .services import macro, patterns, risk, screener, technicals, workspace
 from .services.events import bus
+from .services.trading import trading
 from .services import indicators as ind
 from .services.expressions import evaluate
 from .timeutil import format_ts, get_interval
@@ -924,7 +925,7 @@ def save_screen(name: str,
 
 @tool()
 def show_in_ui(
-    page: Annotated[Literal["chart", "screener", "heatmap", "markets", "calendar"], Field(description="Page to open")],
+    page: Annotated[Literal["chart", "screener", "heatmap", "markets", "calendar", "trading"], Field(description="Page to open")],
     symbol: Annotated[str | None, Field(description="For page=chart")] = None,
     screen: Annotated[dict | None, Field(description="For page=screener: {filters, expression, signal, universe, sort, view}")] = None,
     period: Annotated[str | None, Field(description="For page=heatmap: 1d 1w 1m 3m 6m ytd 1y")] = None,
@@ -941,6 +942,119 @@ def get_guide(topic: Literal["workflow", "expressions", "annotations", "interpre
     """Reference: research workflow, expression language, drawing types/conventions, interpretation notes,
     screener fields and syntax."""
     return {"topic": topic, "text": guides.GUIDES[topic]}
+
+
+# ===================================================================================== trading
+
+
+OrderSide = Annotated[Literal["buy", "sell"], Field(description="buy (long entry / cover short) or sell")]
+
+
+def _spec(symbol, side, qty, order_type, limit_price, stop_price, stop_loss, take_profit, tif, rationale, analysis_id):
+    return OrderSpec(symbol=symbol, side=side, qty=qty, order_type=order_type, limit_price=limit_price,
+                     stop_price=stop_price, stop_loss=stop_loss, take_profit=take_profit, tif=tif,
+                     rationale=rationale, analysis_id=analysis_id)
+
+
+@tool()
+def get_portfolio() -> Any:
+    """The connected brokerage account: status (broker, paper/live, connected, halted, approval mode), net
+    liquidation, cash vs invested capital, open risk to stops, positions (weight, P&L, stop/target), working
+    orders, pending proposals and the risk limits your proposals must pass. Call this before proposing trades."""
+    ov = trading.overview()
+    ov["pending_tickets"] = trading.tickets(status="pending")
+    ov["limits"] = trading.settings().model_dump()
+    return ov
+
+
+@tool()
+def get_trade_history(symbol: Annotated[str | None, Field(description="Only this symbol")] = None,
+                      status: Annotated[Literal["open", "closed"] | None, Field(description="Filter")] = None,
+                      limit: Annotated[int, Field(ge=1, le=500)] = 50) -> Any:
+    """Round-trip trades built from fills (entry/exit averages, net P&L after commission, return %, R multiple vs
+    the planned stop, holding time) plus aggregate stats (win rate, profit factor, expectancy, avg R). Use it
+    to review what worked before proposing new trades."""
+    res = trading.trades(symbol, status, limit)
+    for t in res["trades"]:
+        t["fills"] = [{k: f[k] for k in ("time", "side", "qty", "price", "action")} for f in t["fills"]][:20]
+    return res
+
+
+@tool()
+def preview_order(
+    symbol: Symbol, side: OrderSide,
+    qty: Annotated[int, Field(gt=0, description="Shares")],
+    order_type: Annotated[Literal["limit", "stop", "stop_limit", "market"], Field(description="limit for entries (market only closes)")] = "limit",
+    limit_price: float | None = None, stop_price: float | None = None,
+    stop_loss: Annotated[float | None, Field(description="Protective stop (required for your entries)")] = None,
+    take_profit: Annotated[float | None, Field(description="Profit target")] = None,
+    tif: Literal["day", "gtc"] = "day",
+) -> Any:
+    """Dry-run an order against the account and the risk limits: errors that would block it, warnings, and the
+    estimate (value, % of equity, position after, risk to stop in $ and % of equity, reward:risk). No side effects."""
+    return trading.preview(_spec(symbol, side, qty, order_type, limit_price, stop_price, stop_loss, take_profit, tif,
+                                 None, None), "agent")
+
+
+@tool()
+def propose_order(
+    symbol: Symbol, side: OrderSide,
+    qty: Annotated[int, Field(gt=0, description="Shares (size from risk: risk $ / (entry - stop))")],
+    rationale: Annotated[str, Field(min_length=20, description="Why, the setup, invalidation and what you checked; "
+                                                                "shown to the user when they approve")],
+    order_type: Annotated[Literal["limit", "stop", "stop_limit", "market"], Field(description="limit for entries (market only closes)")] = "limit",
+    limit_price: float | None = None, stop_price: float | None = None,
+    stop_loss: Annotated[float | None, Field(description="Protective stop (required for entries)")] = None,
+    take_profit: Annotated[float | None, Field(description="Profit target")] = None,
+    tif: Literal["day", "gtc"] = "day",
+    analysis_id: Annotated[str | None, Field(description="The save_analysis id this trade implements")] = None,
+) -> Any:
+    """Propose an order. It is risk-checked, then shown to the user as a ticket to approve or reject (approval
+    mode), or sent at once when the user enabled auto mode on a paper account. Entries are sent as brackets:
+    the stop-loss and take-profit orders activate when the entry fills. Returns the ticket; check its status
+    later with get_order_tickets. You cannot approve tickets yourself."""
+    t = trading.submit(_spec(symbol, side, qty, order_type, limit_price, stop_price, stop_loss, take_profit, tif,
+                             rationale, analysis_id), "agent")
+    return {**t, "next": "Waiting for the user's approval in the Trading page" if t["status"] == "pending"
+            else f"Sent to the broker ({t['status']})"}
+
+
+@tool()
+def propose_close_position(
+    symbol: Symbol,
+    rationale: Annotated[str, Field(min_length=10, description="Why close now")],
+    qty: Annotated[int | None, Field(gt=0, description="Shares to close (default: all)")] = None,
+    order_type: Literal["market", "limit"] = "market",
+    limit_price: float | None = None,
+) -> Any:
+    """Propose closing (part of) a position. Same approval flow as propose_order. Leftover stop-loss/take-profit
+    orders are cancelled (or shrunk) automatically once the position is closed (or reduced)."""
+    return trading.close_position(symbol, ClosePosition(qty=qty, order_type=order_type, limit_price=limit_price,
+                                                        rationale=rationale), "agent")
+
+
+@tool()
+def get_order_tickets(status: Annotated[str | None, Field(description="pending, working, filled, rejected, expired, "
+                                                                       "cancelled, error (comma-separate several)")] = None,
+                      symbol: str | None = None, limit: Annotated[int, Field(ge=1, le=200)] = 30) -> Any:
+    """Your and the user's order tickets with their outcome (approved and working/filled, rejected with the
+    user's reason, expired, broker errors)."""
+    return trading.tickets(status, symbol, limit)
+
+
+@tool()
+def cancel_order(
+    order_id: Annotated[str | None, Field(description="Working broker order id (from get_portfolio)")] = None,
+    ticket_id: Annotated[str | None, Field(description="Your pending proposal to withdraw")] = None,
+    reason: str | None = None,
+) -> Any:
+    """Withdraw one of your pending proposals, or cancel a working order placed through Autobench (e.g. an entry
+    that no longer makes sense). Stop-losses protecting an open position cannot be cancelled by you."""
+    if ticket_id:
+        return trading.reject(ticket_id, reason, "agent")
+    if order_id:
+        return trading.cancel_order(order_id, "agent")
+    raise ValueError("Give order_id or ticket_id")
 
 
 # ===================================================================================== prompts

@@ -43,6 +43,7 @@ def _every(seconds: float, last: dict, key: str) -> bool:
 
 def _run() -> None:
     from . import alerts, macro
+    from .trading import trading
     from .universe import universe
 
     last: dict[str, float] = {}
@@ -59,6 +60,8 @@ def _run() -> None:
                     stale = [p for p in stale if p != "quotes"]  # nobody is looking: skip live prices
                 if stale:
                     universe.ensure(stale)
+            if _every(5, last, "trading"):
+                trading.tick()
             if _every(3600, last, "macro"):
                 threading.Thread(target=_warm_macro, args=(macro,), daemon=True).start()
         except Exception:

@@ -35,6 +35,9 @@ def main(argv: list[str] | None = None) -> None:
         from .mcp_server import mcp
         from .services.events import enable_http_relay
 
+        from .services.trading import trading
+
+        trading.enabled_here = False  # only `autobench serve` may hold the broker connection
         db.init_db()
         enable_http_relay(args.relay or f"http://{settings.autobench_host}:{settings.autobench_port}")
         mcp.run("stdio")

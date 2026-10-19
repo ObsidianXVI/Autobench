@@ -8,7 +8,7 @@ import contextlib
 import logging
 from typing import Any
 
-from fastapi import Body, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -18,7 +18,9 @@ from . import db
 from .config import REPO_DIR, get_settings
 from .mcp_server import mcp
 from .providers.base import ProviderError
-from .schemas import AnalysisIn, AnnotationIn, AnnotationPatch, ChartView, NoteIn
+from .services.broker import BrokerError
+from .schemas import AnalysisIn, AnnotationIn, AnnotationPatch, BrokerConnection, ChartView, ClosePosition, NoteIn
+from .schemas import OrderModify, OrderSpec
 from .services import alerts as alerts_svc
 from .services import analyses, annotations, backtest, fundamentals, macro, market, market_context, screener
 from .services import scheduler, technicals, workspace
@@ -26,6 +28,7 @@ from .services import indicators as ind
 from .services import news as news_svc
 from .services import options as options_svc
 from .services.events import bus
+from .services.trading import trading
 from .timeutil import get_interval, resolve_range
 
 log = logging.getLogger(__name__)
@@ -98,6 +101,37 @@ class LayoutBody(BaseModel):
     summary: str | None = None
 
 
+class ArmBody(BaseModel):
+    confirm: str
+
+
+class HaltBody(BaseModel):
+    flatten: bool = False
+    reason: str | None = None
+
+
+class RejectBody(BaseModel):
+    reason: str | None = None
+
+
+class SimPriceBody(BaseModel):
+    symbol: str
+    price: float | None = None
+
+
+_LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1", "testserver", "testclient"}
+
+
+def trading_guard(request: Request) -> None:
+    """Trading writes: only from this machine's UI. The custom header cannot be sent cross-site without a
+    CORS preflight (which other origins fail), and the Host check defeats DNS rebinding."""
+    host = request.url.hostname or ""
+    if host not in _LOCAL_HOSTS and host != get_settings().autobench_host:
+        raise HTTPException(403, "Trading requests must come from the local UI")
+    if request.headers.get("x-autobench") != "1":
+        raise HTTPException(403, "Missing X-Autobench header")
+
+
 class WatchlistPatch(BaseModel):
     add: list[str] | None = None
     remove: list[str] | None = None
@@ -114,9 +148,11 @@ def create_app() -> FastAPI:
         bus.bind_loop(asyncio.get_running_loop())
         if settings.autobench_background:
             scheduler.start()
+            await asyncio.to_thread(trading.start)
         async with mcp.session_manager.run():
             yield
         scheduler.stop()
+        await asyncio.to_thread(trading.stop)
 
     app = FastAPI(title="Autobench", version="0.1.0", lifespan=lifespan)
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["*"], allow_headers=["*"])
@@ -462,6 +498,118 @@ def create_app() -> FastAPI:
     @app.delete("/api/chart-config/{symbol}")
     def chart_config_delete(symbol: str):
         return workspace.delete_chart_config(symbol)
+
+    # --- trading ----------------------------------------------------------------------------
+    guard = [Depends(trading_guard)]
+
+    @app.exception_handler(BrokerError)
+    async def _broker_error(_r: Request, e: BrokerError):
+        return JSONResponse({"detail": str(e)}, status_code=503)
+
+    @app.get("/api/trading/status")
+    def trading_status():
+        trading.start()
+        return trading.status()
+
+    @app.post("/api/trading/connect", dependencies=guard)
+    def trading_connect(body: BrokerConnection):
+        return trading.reconnect(body.broker, body.host, body.port, body.client_id)
+
+    @app.get("/api/trading/overview")
+    def trading_overview():
+        return trading.overview()
+
+    @app.get("/api/trading/orders")
+    def trading_orders(include_done: bool = False, symbol: str | None = None):
+        return trading.orders(include_done, symbol)
+
+    @app.post("/api/trading/preview")
+    def trading_preview(spec: OrderSpec):
+        return trading.preview(spec, "user")
+
+    @app.post("/api/trading/orders", dependencies=guard)
+    def trading_submit(spec: OrderSpec):
+        return trading.submit(spec, "user")
+
+    @app.patch("/api/trading/orders/{order_id}", dependencies=guard)
+    def trading_modify(order_id: str, patch: OrderModify):
+        return trading.modify_order(order_id, patch, "user")
+
+    @app.delete("/api/trading/orders/{order_id}", dependencies=guard)
+    def trading_cancel(order_id: str):
+        return trading.cancel_order(order_id, "user")
+
+    @app.post("/api/trading/positions/{symbol}/close", dependencies=guard)
+    def trading_close(symbol: str, body: ClosePosition):
+        return trading.close_position(symbol, body, "user")
+
+    @app.get("/api/trading/tickets")
+    def trading_tickets(status: str | None = None, symbol: str | None = None, limit: int = Query(100, ge=1, le=1000)):
+        return trading.tickets(status, symbol, limit)
+
+    @app.post("/api/trading/tickets/{ticket_id}/approve", dependencies=guard)
+    def trading_approve(ticket_id: str):
+        return trading.approve(ticket_id)
+
+    @app.post("/api/trading/tickets/{ticket_id}/reject", dependencies=guard)
+    def trading_reject(ticket_id: str, body: RejectBody | None = None):
+        return trading.reject(ticket_id, body.reason if body else None, "user")
+
+    @app.get("/api/trading/fills")
+    def trading_fills(symbol: str | None = None, since: int | None = None, limit: int = Query(500, ge=1, le=20000)):
+        return trading.fills(symbol, since, limit)
+
+    @app.get("/api/trading/trades")
+    def trading_trades(symbol: str | None = None, status: str | None = None, limit: int = Query(200, ge=1, le=5000)):
+        return trading.trades(symbol, status, limit)
+
+    @app.get("/api/trading/equity")
+    def trading_equity(days: int = Query(365, ge=1, le=3650)):
+        return trading.equity(days)
+
+    @app.get("/api/trading/chart/{symbol}")
+    def trading_chart(symbol: str):
+        return trading.chart(symbol)
+
+    @app.get("/api/trading/settings")
+    def trading_settings():
+        return trading.settings().model_dump()
+
+    @app.put("/api/trading/settings", dependencies=guard)
+    def trading_settings_put(data: dict = Body(...)):
+        return trading.update_settings(data).model_dump()
+
+    @app.post("/api/trading/halt", dependencies=guard)
+    def trading_halt(body: HaltBody):
+        return trading.halt("user", body.flatten, body.reason)
+
+    @app.post("/api/trading/resume", dependencies=guard)
+    def trading_resume():
+        return trading.resume()
+
+    @app.post("/api/trading/arm", dependencies=guard)
+    def trading_arm(body: ArmBody):
+        return trading.arm(body.confirm)
+
+    @app.post("/api/trading/disarm", dependencies=guard)
+    def trading_disarm():
+        return trading.disarm()
+
+    @app.get("/api/trading/audit")
+    def trading_audit(limit: int = Query(200, ge=1, le=5000)):
+        return trading.audit(limit)
+
+    @app.post("/api/trading/sim/price", dependencies=guard)
+    def trading_sim_price(body: SimPriceBody):
+        trading.sim().set_price(body.symbol.upper(), body.price)
+        return {"symbol": body.symbol.upper(), "price": body.price}
+
+    @app.post("/api/trading/sim/reset", dependencies=guard)
+    def trading_sim_reset(cash: float = Query(100_000, gt=0)):
+        sim = trading.sim()
+        sim.reset(cash)
+        trading.reset_local_history()
+        return trading.status()
 
     @app.post("/api/events/relay")
     def relay(request: Request, msg: dict = Body(...)):

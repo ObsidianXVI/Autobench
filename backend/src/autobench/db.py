@@ -157,6 +157,72 @@ class AlertRow(Base):
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
 
+class OrderTicketRow(Base):
+    """An order request: proposed by the agent (awaiting approval) or entered by the user, and the
+    broker orders it became (entry plus optional stop-loss / take-profit children)."""
+
+    __tablename__ = "order_tickets"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String, index=True)
+    spec: Mapped[dict] = mapped_column(JSON)  # OrderSpec as submitted
+    source: Mapped[str] = mapped_column(String)  # user | agent
+    status: Mapped[str] = mapped_column(String, index=True)  # pending|rejected|expired|submitted|working|filled|cancelled|error
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    analysis_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    check: Mapped[dict] = mapped_column(JSON, default=dict)  # risk check at proposal/submission time
+    order_ids: Mapped[list] = mapped_column(JSON, default=list)  # broker order ids
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    broker: Mapped[str | None] = mapped_column(String, nullable=True)
+    account: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+
+class FillRow(Base):
+    """An execution reported by the broker (kept locally so trade history outlives the broker's window)."""
+
+    __tablename__ = "fills"
+    exec_id: Mapped[str] = mapped_column(String, primary_key=True)
+    account: Mapped[str] = mapped_column(String, index=True)
+    broker: Mapped[str] = mapped_column(String)
+    order_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    ref: Mapped[str | None] = mapped_column(String, nullable=True)  # our order ref (ticket:role)
+    symbol: Mapped[str] = mapped_column(String, index=True)
+    side: Mapped[str] = mapped_column(String)  # buy | sell
+    qty: Mapped[float] = mapped_column(Float)
+    price: Mapped[float] = mapped_column(Float)
+    time: Mapped[int] = mapped_column(Integer, index=True)  # epoch seconds
+    commission: Mapped[float | None] = mapped_column(Float, nullable=True)
+    realized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class EquityRow(Base):
+    """Periodic account snapshots for the equity curve."""
+
+    __tablename__ = "equity"
+    account: Mapped[str] = mapped_column(String, primary_key=True)
+    t: Mapped[int] = mapped_column(Integer, primary_key=True)
+    net_liquidation: Mapped[float] = mapped_column(Float)
+    cash: Mapped[float] = mapped_column(Float)
+    gross_position_value: Mapped[float] = mapped_column(Float)
+    daily_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    currency: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class TradingAuditRow(Base):
+    """Every trading decision and action (who, what, outcome)."""
+
+    __tablename__ = "trading_audit"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    time: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+    actor: Mapped[str] = mapped_column(String)  # user | agent | system
+    action: Mapped[str] = mapped_column(String)
+    symbol: Mapped[str | None] = mapped_column(String, nullable=True)
+    ticket_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
 class StateRow(Base):
     __tablename__ = "app_state"
     key: Mapped[str] = mapped_column(String, primary_key=True)

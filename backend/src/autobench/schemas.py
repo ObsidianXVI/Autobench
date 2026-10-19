@@ -189,3 +189,92 @@ class NoteIn(BaseModel):
     content: str = Field(max_length=50000)
     symbol: str | None = None
     tags: list[str] = Field(default_factory=list)
+
+
+# --- trading -------------------------------------------------------------------------------------
+
+OrderType = Literal["market", "limit", "stop", "stop_limit"]
+
+
+class OrderSpec(BaseModel):
+    """An order request. stop_loss / take_profit make it a bracket: protective orders that activate
+    once the entry fills and cancel each other."""
+
+    model_config = ConfigDict(extra="forbid")
+    symbol: str = Field(min_length=1, max_length=12)
+    side: Literal["buy", "sell"]
+    qty: float = Field(gt=0, description="Whole shares")
+    order_type: OrderType = "limit"
+    limit_price: float | None = Field(None, gt=0)
+    stop_price: float | None = Field(None, gt=0, description="Trigger price for stop / stop_limit orders")
+    tif: Literal["day", "gtc"] = "day"
+    outside_rth: bool = False
+    stop_loss: float | None = Field(None, gt=0, description="Protective stop price (bracket)")
+    take_profit: float | None = Field(None, gt=0, description="Profit target limit price (bracket)")
+    rationale: str | None = Field(None, max_length=4000)
+    analysis_id: str | None = None
+
+    @field_validator("symbol")
+    @classmethod
+    def _sym(cls, v: str) -> str:
+        return v.strip().upper()
+
+    @model_validator(mode="after")
+    def _check(self) -> "OrderSpec":
+        if self.qty != int(self.qty):
+            raise ValueError("qty must be whole shares")
+        if self.order_type in ("limit", "stop_limit") and self.limit_price is None:
+            raise ValueError(f"{self.order_type} orders need limit_price")
+        if self.order_type in ("stop", "stop_limit") and self.stop_price is None:
+            raise ValueError(f"{self.order_type} orders need stop_price")
+        if self.order_type in ("market", "stop"):
+            self.limit_price = None
+        if self.order_type in ("market", "limit"):
+            self.stop_price = None
+        return self
+
+
+class OrderModify(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    qty: float | None = Field(None, gt=0)
+    limit_price: float | None = Field(None, gt=0)
+    stop_price: float | None = Field(None, gt=0)
+
+
+class ClosePosition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    qty: float | None = Field(None, gt=0, description="Shares to close (default: the whole position)")
+    order_type: Literal["market", "limit"] = "market"
+    limit_price: float | None = Field(None, gt=0)
+    rationale: str | None = Field(None, max_length=4000)
+
+
+class RiskLimits(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_order_value: float = Field(10_000, gt=0, description="Largest new-position order, in USD")
+    max_position_pct: float = Field(20, gt=0, le=100, description="Largest position as % of net liquidation")
+    max_daily_loss_pct: float = Field(2, gt=0, le=100, description="No new positions after losing this % today")
+    max_orders_per_day: int = Field(30, ge=1)
+    max_risk_pct: float = Field(1, gt=0, le=100, description="Largest entry-to-stop risk per order, % of equity")
+    allow_short: bool = False
+    allow_market_entries: bool = False
+    allow_outside_rth: bool = False
+    require_stop_for_agent: bool = True
+    symbol_allowlist: list[str] = Field(default_factory=list)
+    symbol_blocklist: list[str] = Field(default_factory=list)
+
+
+class TradingSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["confirm", "auto"] = Field("confirm", description="confirm: you approve each agent order; "
+                                             "auto: agent orders within the limits go straight to a paper account")
+    ticket_ttl_minutes: int = Field(240, ge=5, le=10080)
+    limits: RiskLimits = Field(default_factory=RiskLimits)
+
+
+class BrokerConnection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    broker: Literal["ibkr", "sim", "none"]
+    host: str | None = None
+    port: int | None = Field(None, ge=1, le=65535)
+    client_id: int | None = Field(None, ge=0)

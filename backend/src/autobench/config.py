@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     autobench_cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     autobench_background: bool = True  # scheduler: alerts, universe/macro refreshes (serve only)
 
+    # Trading. The broker connects only under `autobench serve`. Paper accounts trade freely (within
+    # the risk limits); a live account stays read-only unless this flag is set AND it is armed in the UI.
+    autobench_broker: str = "ibkr"  # ibkr | sim (built-in simulator) | none
+    ibkr_host: str = "127.0.0.1"
+    ibkr_port: int = 4002  # IB Gateway paper (live 4001); TWS paper 7497 (live 7496)
+    ibkr_client_id: int = 7
+    autobench_allow_live_trading: bool = False
+
     @property
     def alpaca_enabled(self) -> bool:
         return bool(self.alpaca_api_key_id and self.alpaca_api_secret_key)

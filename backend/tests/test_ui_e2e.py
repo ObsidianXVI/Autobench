@@ -38,7 +38,7 @@ def _free_port() -> int:
 def server(tmp_path_factory):
     port = _free_port()
     env = {**os.environ, "AUTOBENCH_BAR_PROVIDER": "fake", "ALPACA_API_KEY_ID": "", "ALPACA_API_SECRET_KEY": "",
-           "AUTOBENCH_BACKGROUND": "1", "AUTOBENCH_DB_PATH": str(tmp_path_factory.mktemp("ui") / "ui.db")}
+           "AUTOBENCH_BACKGROUND": "1", "AUTOBENCH_BROKER": "sim", "AUTOBENCH_DB_PATH": str(tmp_path_factory.mktemp("ui") / "ui.db")}
     log = open(tmp_path_factory.mktemp("ui-log") / "server.log", "w")
     proc = subprocess.Popen([sys.executable, "-m", "autobench", "serve", "--port", str(port)], env=env,
                             stdout=log, stderr=subprocess.STDOUT)
