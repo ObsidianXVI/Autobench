@@ -22,6 +22,7 @@ import 'kit/state.dart';
 import 'pages/calendar.dart';
 import 'pages/heatmap.dart';
 import 'pages/journal.dart';
+import 'pages/portfolio.dart';
 import 'pages/markets.dart';
 import 'pages/screener.dart';
 import 'pages/trading.dart';
@@ -39,6 +40,7 @@ const pages = [
   ('calendar', 'Calendar', 'calendar'),
   ('trading', 'Trading', 'wallet'),
   ('journal', 'Journal', 'note'),
+  ('portfolio', 'Portfolio', 'pie'),
 ];
 
 class App {
@@ -228,6 +230,8 @@ class App {
         p.onShow();
       case JournalPage p:
         p.onShow();
+      case PortfolioPage p:
+        p.onShow();
       case ChartPage p:
         for (final panel in p.panels) {
           panel.engine.invalidate();
@@ -261,6 +265,10 @@ class App {
         return p.root;
       case 'journal':
         final p = JournalPage();
+        _pageObjects[key] = p;
+        return p.root;
+      case 'portfolio':
+        final p = PortfolioPage();
         _pageObjects[key] = p;
         return p.root;
       default:
@@ -448,6 +456,9 @@ class App {
         if (eventId != null) _toastedEvents.add(eventId);
         alertToast(d['description'].s ?? '', symbol: d['symbol'].s ?? '', message: d['message'].s,
             price: d['trigger_price'].d, eventId: eventId);
+      case 'portfolio.imported':
+        final po = _pageObjects['portfolio'];
+        if (po is PortfolioPage) po.onImported();
       case 'inbox.updated':
         if (d['unread'].i != store.inboxUnread.value) store.loadInbox();
       case 'ui.navigate':
@@ -469,8 +480,10 @@ class App {
             po.selectTab(tab);
           } else if (po is JournalPage) {
             po.selectTab(tab);
-          } else {
-            store.setPref(page == 'journal' ? 'journal.tab' : 'trading.tab', tab);
+          } else if (po is PortfolioPage) {
+            po.selectTab(tab);
+          } else if (page == 'journal' || page == 'portfolio' || page == 'trading') {
+            store.setPref('$page.tab', tab);
           }
         }
         _pushActivity('Opened ${d['panel'].s ?? page ?? 'a page'} for you', 'agent', d['symbol'].s);

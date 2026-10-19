@@ -148,6 +148,25 @@ What you get:
   trade and notes per trade. Also your chart drawings of the last 7/30/90 days, aggregate performance
   (win rate, profit factor, expectancy, drawdown, streaks, exit efficiency, P&L by symbol, side, month,
   weekday and agent vs. your own ideas) and your notes per symbol.
+- **Portfolio page**: your account's full history from IBKR statements, kept current by the app's own
+  daily account snapshots. Import a Flex Query (XML, recommended) or an Activity Statement (CSV) by
+  upload or drag and drop, or let the app download your Flex Query through the Flex Web Service, once
+  or daily. Imports are idempotent: overlapping statements and executions the app already recorded
+  live are not counted twice. The page shows:
+  - **Overview**: account value, positions (live when connected, else from the latest statement),
+    cash by currency, and all-time deposits, withdrawals, dividends, tax, interest, fees and commissions.
+  - **Performance** for any period: *start + net deposits + investment gain = end*. Growth (which
+    includes your deposits) is kept apart from investment gain, which is split into trading & market
+    P&L (realised and the rest) and income & costs. Returns are time-weighted (how the investments
+    did, deposits excluded) and money-weighted (IRR of your own cash flows), with a value-vs-money-put-in
+    chart and yearly and monthly rows.
+  - **Cash flows** and **Imports** (history, remove an import, Flex settings).
+
+  For the Flex Query, include: Account Information, Change in NAV, Net Asset Value (NAV) in Base,
+  Trades (executions), Cash Transactions, Transfers, Open Positions and Cash Report, in XML format.
+  The Flex token is entered on the page (or set `AUTOBENCH_IBKR_FLEX_TOKEN` and
+  `AUTOBENCH_IBKR_FLEX_QUERY` in `.env`). It is stored in the local database, never returned by the
+  API and never given to the agent.
 - **Trading page**: net liquidation, day/unrealized/realized P&L, cash vs invested vs committed to
   orders vs free cash, open risk to stops, capital allocation, the equity curve, and tabs for
   positions, orders, agent proposals, trade history (round trips with R multiples, win rate, profit
@@ -179,7 +198,7 @@ Safety:
 - **stdio-only clients** (e.g. Claude Desktop): command `backend/.venv/bin/autobench`, args `["mcp-stdio"]`.
   Drawings are relayed to a running `autobench serve`, so the chart still updates live.
 
-## What the agent can do (84 MCP tools)
+## What the agent can do (85 MCP tools)
 
 | Area | Tools |
 |---|---|
@@ -191,8 +210,8 @@ Safety:
 | Chart | get_chart_view, set_chart_view (symbol, interval, range, chart type, scale), get_chart_layers, edit_chart_add / edit_chart_item / edit_chart_remove (indicators with params and per-output styles, other symbols, volume, panes), edit_chart_layer (layers per interval), set_chart_layout and manage_layouts (multi-chart grid, saved layouts), draw_annotations (17 drawing types incl. trade plans), list/update/delete_annotations |
 | Market-wide | screen_stocks (~6,000 stocks, 70 fields, filters/expressions/signals), get_stock_snapshot, get_market_breadth, get_sector_performance, save_screen, list_screens, delete_screen |
 | Macro & calendars | get_macro_dashboard (FRED/Treasury/BLS), get_macro_series, get_cross_asset_board, get_earnings_calendar, get_economic_calendar |
-| Alerts & UI | create_alert (price, crossing, daily change, indicator condition), update_alert (move, pause, re-arm), list_alerts, delete_alert, get_alert_inbox, show_in_ui (pages, side panels, Trading/Journal tabs) |
-| Trading | get_portfolio, get_trade_history, preview_order, propose_order (bracket orders for your approval), propose_close_position, propose_order_change (trail a stop, move a limit; for your approval), get_order_tickets, cancel_order, get_journal |
+| Alerts & UI | create_alert (price, crossing, daily change, indicator condition), update_alert (move, pause, re-arm), list_alerts, delete_alert, get_alert_inbox, show_in_ui (pages, side panels, Trading/Journal/Portfolio tabs) |
+| Trading | get_portfolio, get_trade_history, preview_order, propose_order (bracket orders for your approval), propose_close_position, propose_order_change (trail a stop, move a limit; for your approval), get_order_tickets, cancel_order, get_journal, get_account_history (read-only) |
 | Memory | save_analysis, list_analyses, get_analysis, get_track_record (hit rate, R, alpha, Brier calibration), save_note, search_notes, delete_note, list_watchlists, update_watchlist (sections, order, rename), delete_watchlist, scan_watchlist |
 
 Strategies and conditions use a safe expression language, for example

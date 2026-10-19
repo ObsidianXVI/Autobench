@@ -21,7 +21,7 @@ from .services import analyses, annotations, backtest, filings, fundamentals, le
 from .services import news as news_svc
 from .services import options as options_svc
 from .services import alerts as alerts_svc
-from .services import chart_layers, journal, macro, patterns, risk, screener, technicals, workspace
+from .services import chart_layers, journal, macro, patterns, portfolio, risk, screener, technicals, workspace
 from .services.events import bus
 from .services.trading import trading
 from .services import indicators as ind
@@ -1115,7 +1115,7 @@ def delete_screen(name: str) -> Any:
 
 @tool()
 def show_in_ui(
-    page: Annotated[Literal["chart", "screener", "heatmap", "markets", "calendar", "trading", "journal"], Field(description="Page to open")],
+    page: Annotated[Literal["chart", "screener", "heatmap", "markets", "calendar", "trading", "journal", "portfolio"], Field(description="Page to open")],
     symbol: Annotated[str | None, Field(description="For page=chart")] = None,
     screen: Annotated[dict | None, Field(description="For page=screener: {filters, expression, signal, universe, sort, view}")] = None,
     period: Annotated[str | None, Field(description="For page=heatmap: 1d 1w 1m 3m 6m ytd 1y")] = None,
@@ -1123,7 +1123,8 @@ def show_in_ui(
                      Field(description="For page=chart: open this side panel")] = None,
     watchlist: Annotated[str | None, Field(description="For panel=watchlist: which list")] = None,
     tab: Annotated[str | None, Field(description="For page=trading: positions | orders | proposals | history | fills | activity | risk; "
-                                                 "for page=journal: trades | drawings | performance | notes")] = None,
+                                                 "for page=journal: trades | drawings | performance | notes; "
+                                                 "for page=portfolio: overview | performance | cash | imports")] = None,
 ) -> Any:
     """Switch the user's web UI to a page so they see what you are discussing (e.g. the screener with your
     filters applied, the sector heatmap, pending proposals, a side panel). Use set_chart_view for the chart."""
@@ -1259,6 +1260,41 @@ def get_journal(
             return journal.drawings(days, symbol)
         case _:
             return journal.notes(symbol)
+
+
+@tool()
+def get_account_history(
+    section: Annotated[Literal["overview", "performance", "cash_flows"], Field()] = "overview",
+    account: Annotated[str | None, Field(description="Account id (default: the selected / most recent one)")] = None,
+    period: Annotated[Literal["1m", "3m", "6m", "ytd", "1y", "3y", "5y", "all"], Field()] = "all",
+    start: Annotated[str | None, Field(description="YYYY-MM-DD (overrides period)")] = None,
+    end: Annotated[str | None, Field(description="YYYY-MM-DD")] = None,
+    kind: Annotated[Literal["contributions", "income", "deposit", "withdrawal", "transfer", "dividend", "tax",
+                            "interest", "fee"] | None, Field(description="cash_flows filter")] = None,
+    limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+) -> Any:
+    """The user's account history from imported IBKR statements plus the app's own account snapshots (Portfolio
+    page). overview: current state (live when connected, else the latest statement's positions and cash),
+    lifetime deposits / withdrawals / dividends / interest / fees / commissions. performance: for a period,
+    growth (NAV change) split into net contributions (deposits - withdrawals, transfers) and investment gain
+    (trading & market P&L, realised and other, plus income and costs), time-weighted return (independent of
+    deposits) and money-weighted return (IRR), with monthly and yearly rows. cash_flows: dated deposits,
+    withdrawals, dividends, tax, interest and fees. Never call a deposit a profit: report returns and
+    contributions separately."""
+    match section:
+        case "performance":
+            res = portfolio.performance(account, period, start, end)
+            res["series"] = res["series"][-60:]
+            res["monthly"] = res["monthly"][-24:]
+            return res
+        case "cash_flows":
+            return {"account": account or portfolio.default_account(),
+                    "items": portfolio.cash_flows(account, kind, start, end, limit)}
+        case _:
+            ov = portfolio.overview(account)
+            if ov.get("live"):
+                ov["live"]["positions"] = ov["live"]["positions"][:limit]
+            return ov
 
 
 @tool()

@@ -193,7 +193,8 @@ def round_trips(fills: list[dict]) -> list[dict]:
                 t = {"id": f["exec_id"], "symbol": sym, "side": "long" if sign > 0 else "short", "status": "open",
                      "opened_at": f["time"], "closed_at": None, "qty": 0.0, "max_qty": 0.0, "entry_value": 0.0,
                      "entry_qty": 0.0, "exit_value": 0.0, "exit_qty": 0.0, "realized_pnl": 0.0, "commission": 0.0,
-                     "fills": [], "ticket_ids": []}
+                     "fills": [], "ticket_ids": [], "multiplier": float(f.get("multiplier") or 1),
+                     "asset_class": f.get("asset_class") or "STK"}
                 open_by_sym[sym] = t
             tdir = 1 if t["side"] == "long" else -1
             ticket_id, _ = parse_ref(f.get("ref"))
@@ -212,7 +213,7 @@ def round_trips(fills: list[dict]) -> list[dict]:
                 q = min(qty, t["qty"])
                 t["exit_value"] += q * f["price"]
                 t["exit_qty"] += q
-                t["realized_pnl"] += (f["price"] - avg) * q * tdir
+                t["realized_pnl"] += (f["price"] - avg) * q * tdir * t["multiplier"]
                 part = comm * q / float(f["qty"])
                 t["commission"] += part
                 comm -= part
@@ -231,7 +232,8 @@ def round_trips(fills: list[dict]) -> list[dict]:
         t.update(entry_avg=round(entry_avg, 4) if entry_avg else None, exit_avg=round(exit_avg, 4) if exit_avg else None,
                  realized_pnl=round(t["realized_pnl"], 2), commission=round(t["commission"], 2),
                  net_pnl=round(t["realized_pnl"] - t["commission"], 2),
-                 return_pct=round(t["realized_pnl"] / (entry_avg * t["exit_qty"]) * 100, 2) if entry_avg and t["exit_qty"] else None,
+                 return_pct=round(t["realized_pnl"] / (entry_avg * t["exit_qty"] * t["multiplier"]) * 100, 2)
+                 if entry_avg and t["exit_qty"] else None,
                  holding_seconds=(t["closed_at"] or int(time.time())) - t["opened_at"])
         for k in ("entry_value", "exit_value"):
             t.pop(k)
@@ -830,7 +832,9 @@ class TradingService:
             rows = s.scalars(q).all()
             return [{"exec_id": r.exec_id, "order_id": r.order_id, "ref": r.ref, "ticket_id": parse_ref(r.ref)[0],
                      "role": parse_ref(r.ref)[1], "symbol": r.symbol, "side": r.side, "qty": r.qty, "price": r.price,
-                     "time": r.time, "commission": r.commission, "realized_pnl": r.realized_pnl, "account": r.account}
+                     "time": r.time, "commission": r.commission, "realized_pnl": r.realized_pnl, "account": r.account,
+                     "asset_class": r.asset_class, "multiplier": r.multiplier, "currency": r.currency,
+                     "source": "statement" if r.import_id else "live"}
                     for r in rows]
 
     def trades(self, symbol: str | None = None, status: str | None = None, limit: int = 200) -> dict:

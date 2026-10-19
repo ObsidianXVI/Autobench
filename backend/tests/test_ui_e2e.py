@@ -99,6 +99,8 @@ def _reset(server):
     httpx.put(f"{server}/api/trading/settings", json={"mode": "confirm"}, headers=th)
     httpx.post(f"{server}/api/trading/account", json={"account": "SIM-PAPER"}, headers=th)
     httpx.post(f"{server}/api/trading/sim/reset", params={"cash": 100000}, headers=th)
+    for imp in httpx.get(f"{server}/api/portfolio/imports").json()["imports"]:
+        httpx.delete(f"{server}/api/portfolio/imports/{imp['id']}", headers=th)
 
 
 @pytest.fixture
@@ -869,4 +871,36 @@ def test_journal_page(page, server):
     page.wait_for_selector(".jr-group:has-text('MSFT') .jr-note:has-text('Took profit')")
     # the agent opens a journal tab
     mcp_call(server, "show_in_ui", {"page": "journal", "tab": "performance"})
+    page.wait_for_selector(".tr-tabs .tab.on[data-tab='performance']")
+
+
+def test_portfolio_import_and_returns(page, server, tmp_path):
+    from test_portfolio import FLEX
+
+    f = tmp_path / "flex.xml"
+    f.write_text(FLEX)
+    page.click("a.page-tab:has-text('Portfolio')")
+    page.wait_for_selector(".portfolio-page .tr-tabs .tab.on[data-tab='overview']")
+    with page.expect_file_chooser() as fc:
+        page.click(".portfolio-page button:has-text('Import statement')")
+    fc.value.set_files(str(f))
+    page.wait_for_selector(".toast:has-text('Imported flex.xml')")
+    # the page switches to the imported account
+    page.wait_for_selector(".pf-kpis .tr-kpi:has-text('Investment gain'):has-text('+$190.00')")
+    assert "$13,000.00" in page.inner_text(".pf-kpis .tr-kpi:has-text('Money put in')")
+    assert "MSFT" in page.inner_text(".pf-overview")
+    page.click(".tr-tabs .tab[data-tab='performance']")
+    eq = page.wait_for_selector(".pf-equation").inner_text()
+    assert "+$13,000.00" in eq and "+$190.00" in eq and "$13,190.00" in eq
+    assert "+2.90%" in page.inner_text(".tr-kpi:has-text('Time-weighted')")
+    page.wait_for_selector(".pf-chart .pf-line-nav")
+    page.click(".tr-tabs .tab[data-tab='cash']")
+    page.wait_for_function("document.querySelectorAll('.data-table tbody tr .badge').length === 5")
+    page.click(".seg-btn:has-text('Deposits & withdrawals')")
+    page.wait_for_function("document.querySelectorAll('.data-table tbody tr .badge').length === 3")
+    page.click(".tr-tabs .tab[data-tab='imports']")
+    page.wait_for_selector(".data-table tbody tr:has-text('flex.xml')")
+    assert "3 trades" in page.inner_text(".data-table tbody tr:has-text('flex.xml')")
+    # the agent opens the page and reads the same numbers
+    mcp_call(server, "show_in_ui", {"page": "portfolio", "tab": "performance"})
     page.wait_for_selector(".tr-tabs .tab.on[data-tab='performance']")

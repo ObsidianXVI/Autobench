@@ -53,7 +53,7 @@ def analyze_trade(t: dict, now: int | None = None) -> dict:
     closed = t["status"] == "closed"
     end = t["closed_at"] or now
     out: dict = {}
-    if not entry:
+    if not entry or (t.get("asset_class") or "STK") != "STK":  # price history is for stocks/ETFs only
         return out
     # inside the trade: intraday bars for short holds, daily otherwise
     hold = end - t["opened_at"]

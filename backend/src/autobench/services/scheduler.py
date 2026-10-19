@@ -62,11 +62,19 @@ def _run() -> None:
                     universe.ensure(stale)
             if _every(5, last, "trading"):
                 trading.tick()
+            if _every(1800, last, "flex"):
+                threading.Thread(target=_flex_sync, daemon=True).start()
             if _every(3600, last, "macro"):
                 threading.Thread(target=_warm_macro, args=(macro,), daemon=True).start()
         except Exception:
             log.exception("scheduler iteration failed")
         _stop.wait(5)
+
+
+def _flex_sync() -> None:
+    from . import portfolio
+
+    portfolio.maybe_auto_sync()
 
 
 def _warm_macro(macro) -> None:

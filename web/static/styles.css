@@ -881,3 +881,47 @@ button.panel-title:hover { background: var(--hover); }
 .jr-perf .tr-kpi b { white-space: normal; font-size: 15px; }
 .tb.tb-check { gap: 5px; cursor: pointer; user-select: none; }
 .tb.tb-check input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+
+/* portfolio page */
+.portfolio-page { padding: 12px 14px 24px; display: grid; gap: 12px; align-content: start; }
+.pf-body { display: grid; gap: 14px; min-width: 0; }
+.pf-overview, .pf-imports, .pf-col { display: grid; gap: 14px; min-width: 0; }
+.pf-kpis { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
+.pf-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px; align-items: start; }
+.pf-facts { display: grid; gap: 2px; }
+.pf-empty { display: grid; justify-items: center; gap: 8px; padding: 36px 16px; text-align: center; }
+.pf-empty .muted { max-width: 460px; }
+.pf-stack { display: flex; height: 14px; border-radius: 7px; overflow: hidden; gap: 2px; background: var(--panel-2); }
+.pf-seg { flex-basis: 0; min-width: 3px; }
+.pf-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; align-items: center; }
+.pf-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.pf-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
+.pf-c-open { background: #64748b; }
+.pf-c-contrib { background: #38bdf8; }
+.pf-c-up { background: var(--up); }
+.pf-c-down { background: var(--down); }
+.pf-c-inc { background: #eab308; }
+.pf-c-nav { background: var(--accent); }
+.pf-equation { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; padding: 10px 12px; background: var(--panel-2);
+  border-radius: var(--radius); font-variant-numeric: tabular-nums; }
+.pf-equation .op { color: var(--text-muted); font-weight: 600; }
+.pf-chart-wrap { display: grid; gap: 4px; }
+.pf-chart { width: 100%; height: 200px; display: block; }
+.pf-line-nav { fill: none; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.pf-line-contrib { fill: none; stroke: #38bdf8; stroke-width: 1.5; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
+.pf-gain { stroke: none; }
+.pf-gain.up { fill: color-mix(in srgb, var(--up) 22%, transparent); }
+.pf-gain.down { fill: color-mix(in srgb, var(--down) 22%, transparent); }
+.portfolio-page .tr-head select { width: auto; max-width: 260px; }
+.pf-drop { margin-top: 4px; }
+.pf-axis { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.pf-cash { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.pf-desc { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-drop { display: grid; justify-items: center; gap: 6px; padding: 22px 16px; border: 1.5px dashed var(--border); border-radius: var(--radius);
+  text-align: center; color: var(--text-muted); }
+.pf-drop.over { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.pf-howto ol { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+.badge.pf-k-deposit { color: #38bdf8; }
+.badge.pf-k-withdrawal { color: var(--down); }
+.badge.pf-k-dividend, .badge.pf-k-interest { color: var(--up); }
+.badge.pf-k-tax, .badge.pf-k-fee { color: var(--warn, #eab308); }

@@ -22,7 +22,8 @@ from .services.broker import BrokerError
 from .schemas import AccountSelect, AnalysisIn, AnnotationIn, AnnotationPatch, BrokerConnection, ChartView, ClosePosition, NoteIn
 from .schemas import OrderModify, OrderSpec
 from .services import alerts as alerts_svc
-from .services import journal
+from .services import journal, portfolio
+from .services.statements import StatementError
 from .services import analyses, annotations, backtest, fundamentals, macro, market, market_context, screener
 from .services import scheduler, technicals, workspace
 from .services import indicators as ind
@@ -84,6 +85,18 @@ class ScreenBody(BaseModel):
     columns: list[str] | None = None
     offset: int = Field(0, ge=0)
     limit: int = Field(50, ge=1, le=500)
+
+
+class StatementUpload(BaseModel):
+    text: str
+    filename: str | None = None
+
+
+class FlexSettings(BaseModel):
+    token: str | None = None
+    query_id: str | None = None
+    auto_sync: bool | None = None
+    clear_token: bool = False
 
 
 class InboxBody(BaseModel):
@@ -540,6 +553,57 @@ def create_app() -> FastAPI:
 
     # --- trading ----------------------------------------------------------------------------
     guard = [Depends(trading_guard)]
+
+    # --- portfolio history (broker statements) -------------------------------------------------
+    @app.exception_handler(StatementError)
+    async def _statement_error(_r: Request, e: StatementError):
+        return JSONResponse({"detail": str(e)}, status_code=400)
+
+    @app.get("/api/portfolio/accounts")
+    def portfolio_accounts():
+        return {"accounts": portfolio.accounts(), "default": portfolio.default_account()}
+
+    @app.get("/api/portfolio/overview")
+    def portfolio_overview(account: str | None = None):
+        return portfolio.overview(account)
+
+    @app.get("/api/portfolio/performance")
+    def portfolio_performance(account: str | None = None, period: str | None = "all", start: str | None = None,
+                              end: str | None = None):
+        return portfolio.performance(account, period, start, end)
+
+    @app.get("/api/portfolio/cash-flows")
+    def portfolio_cash_flows(account: str | None = None, kind: str | None = None, start: str | None = None,
+                             end: str | None = None, limit: int = 1000):
+        return {"account": account or portfolio.default_account(),
+                "items": portfolio.cash_flows(account, kind, start, end, limit)}
+
+    @app.get("/api/portfolio/imports")
+    def portfolio_imports():
+        return {"imports": portfolio.imports()}
+
+    @app.post("/api/portfolio/import", dependencies=guard)
+    def portfolio_import(body: StatementUpload):
+        return portfolio.import_statement(body.text, body.filename)
+
+    @app.delete("/api/portfolio/imports/{import_id}", dependencies=guard)
+    def portfolio_import_delete(import_id: str):
+        try:
+            return portfolio.delete_import(import_id)
+        except KeyError:
+            raise HTTPException(404, "No such import") from None
+
+    @app.get("/api/portfolio/flex")
+    def portfolio_flex():
+        return portfolio.flex_settings()
+
+    @app.post("/api/portfolio/flex", dependencies=guard)
+    def portfolio_flex_set(body: FlexSettings):
+        return portfolio.set_flex_settings(body.token, body.query_id, body.auto_sync, body.clear_token)
+
+    @app.post("/api/portfolio/flex/sync", dependencies=guard)
+    def portfolio_flex_sync():
+        return portfolio.flex_sync()
 
     @app.exception_handler(BrokerError)
     async def _broker_error(_r: Request, e: BrokerError):

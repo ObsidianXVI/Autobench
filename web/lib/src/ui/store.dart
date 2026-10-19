@@ -107,6 +107,8 @@ const prefDefaults = <String, Object?>{
   'calendar.tab': 'earnings',
   'journal.tab': 'trades',
   'journal.days': 365,
+  'portfolio.tab': 'overview',
+  'portfolio.period': 'all',
   'journal.drawDays': 30,
   'calendar.universe': 'sp500',
   'calendar.minCap': 0.0,

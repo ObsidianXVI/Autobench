@@ -210,6 +210,11 @@ class FillRow(Base):
     time: Mapped[int] = mapped_column(Integer, index=True)  # epoch seconds
     commission: Mapped[float | None] = mapped_column(Float, nullable=True)
     realized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # set for executions imported from a broker statement (live fills leave them empty)
+    asset_class: Mapped[str | None] = mapped_column(String, nullable=True)  # STK | OPT | FUT | ...
+    multiplier: Mapped[float | None] = mapped_column(Float, nullable=True)
+    currency: Mapped[str | None] = mapped_column(String, nullable=True)
+    import_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
 
 
 class EquityRow(Base):
@@ -223,6 +228,75 @@ class EquityRow(Base):
     gross_position_value: Mapped[float] = mapped_column(Float)
     daily_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
     currency: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class StatementImportRow(Base):
+    """One imported broker statement (file upload or Flex Web Service download)."""
+
+    __tablename__ = "statement_imports"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    kind: Mapped[str] = mapped_column(String)  # flex_xml | activity_csv
+    source: Mapped[str] = mapped_column(String)  # upload | flex_web
+    filename: Mapped[str | None] = mapped_column(String, nullable=True)
+    accounts: Mapped[list] = mapped_column(JSON, default=list)
+    from_date: Mapped[str | None] = mapped_column(String, nullable=True)
+    to_date: Mapped[str | None] = mapped_column(String, nullable=True)
+    counts: Mapped[dict] = mapped_column(JSON, default=dict)  # new rows per kind
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)  # the statement's own change-in-NAV, per account
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+
+
+class CashFlowRow(Base):
+    """Money moving in or out of the account other than trades: deposits, withdrawals, position
+    transfers, dividends, withholding tax, interest and fees. Amounts are in the account's base currency
+    (positive = into the account)."""
+
+    __tablename__ = "cash_flows"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    account: Mapped[str] = mapped_column(String, index=True)
+    date: Mapped[str] = mapped_column(String, index=True)  # YYYY-MM-DD
+    kind: Mapped[str] = mapped_column(String, index=True)  # deposit|withdrawal|transfer|dividend|tax|interest|fee|other
+    amount: Mapped[float] = mapped_column(Float)
+    amount_local: Mapped[float] = mapped_column(Float)
+    currency: Mapped[str] = mapped_column(String)
+    fx_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    symbol: Mapped[str | None] = mapped_column(String, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    import_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+
+
+class NavRow(Base):
+    """End-of-day net asset value in base currency, from statements."""
+
+    __tablename__ = "nav_history"
+    account: Mapped[str] = mapped_column(String, primary_key=True)
+    date: Mapped[str] = mapped_column(String, primary_key=True)
+    total: Mapped[float] = mapped_column(Float)
+    cash: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stock: Mapped[float | None] = mapped_column(Float, nullable=True)
+    options: Mapped[float | None] = mapped_column(Float, nullable=True)
+    other: Mapped[float | None] = mapped_column(Float, nullable=True)
+    currency: Mapped[str | None] = mapped_column(String, nullable=True)
+    import_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+
+
+class PositionSnapshotRow(Base):
+    """Holdings (and cash balances, asset_class CASH) on a statement date."""
+
+    __tablename__ = "position_snapshots"
+    account: Mapped[str] = mapped_column(String, primary_key=True)
+    date: Mapped[str] = mapped_column(String, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String, primary_key=True)
+    asset_class: Mapped[str] = mapped_column(String)
+    qty: Mapped[float] = mapped_column(Float)
+    mark: Mapped[float | None] = mapped_column(Float, nullable=True)
+    value: Mapped[float | None] = mapped_column(Float, nullable=True)  # local currency
+    value_base: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cost_basis: Mapped[float | None] = mapped_column(Float, nullable=True)
+    unrealized: Mapped[float | None] = mapped_column(Float, nullable=True)
+    currency: Mapped[str | None] = mapped_column(String, nullable=True)
+    multiplier: Mapped[float | None] = mapped_column(Float, nullable=True)
+    import_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
 
 
 class TradingAuditRow(Base):
