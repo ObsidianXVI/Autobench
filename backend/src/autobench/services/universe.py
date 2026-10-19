@@ -107,6 +107,7 @@ class Universe:
         self._refreshing: set[str] = set()
         self._progress: dict[str, str] = {}
         self._table: tuple[tuple, pd.DataFrame] | None = None
+        self._tech: tuple[float, pd.DataFrame] | None = None
 
     # ---------------------------------------------------------------- refresh orchestration
 
@@ -212,7 +213,9 @@ class Universe:
         prev = self.bars.value
         a = alpaca_provider()
         if a is not None:
-            incremental = prev is not None and self.bars.age() < 5 * 86400
+            # an incremental merge only makes sense on top of bars from the same feed (IEX volume is
+            # a few percent of consolidated volume, so mixing feeds would corrupt averages)
+            incremental = prev is not None and self.bars.age() < 5 * 86400 and prev.get("feed") == a.feed
             start = now_ts() - (10 if incremental else int(HISTORY_DAYS * 7 / 5) + 10) * 86400
             frames = self._alpaca_bars(a, symbols, start)
         else:
@@ -224,7 +227,10 @@ class Universe:
         fresh = _to_matrix(frames)
         if incremental and prev is not None:
             fresh = _merge_matrix(prev, fresh)
-        self.bars.store(_trim_matrix(fresh, HISTORY_DAYS))
+        fresh = _trim_matrix(fresh, HISTORY_DAYS)
+        if fresh is not None:
+            fresh["feed"] = a.feed if a is not None else "provider"
+        self.bars.store(fresh)
         self._table = None
 
     def _alpaca_bars(self, a, symbols: list[str], start: int) -> dict[str, list[dict]]:
@@ -309,7 +315,10 @@ class Universe:
         if listings is None:
             return pd.DataFrame()
         df = listings.copy()
-        tech = technicals(self.bars.value) if self.bars.value is not None else pd.DataFrame()
+        # technicals only change with the bars layer; quote refreshes (every minute) reuse them
+        if self._tech is None or self._tech[0] != self.bars.updated:
+            self._tech = (self.bars.updated, technicals(self.bars.value) if self.bars.value is not None else pd.DataFrame())
+        tech = self._tech[1]
         df = df.join(tech, how="left")
         if self.fundamentals.value is not None:
             df = df.join(self.fundamentals.value, how="left", rsuffix="_f")
@@ -402,7 +411,7 @@ def _merge_matrix(old: dict, new: dict | None) -> dict:
                     {d: v for d, v in zip(src["dates"], src[k][:, j]) if not np.isnan(v)})
     dates = pd.DatetimeIndex(sorted(set(old["dates"]) | set(new["dates"])))
     syms = sorted(frames)
-    out = {"dates": dates, "symbols": syms}
+    out = {"dates": dates, "symbols": syms, "feed": new.get("feed", old.get("feed"))}
     pos = {d: i for i, d in enumerate(dates)}
     for k in ("open", "high", "low", "close", "volume"):
         m = np.full((len(dates), len(syms)), np.nan)
@@ -416,7 +425,7 @@ def _merge_matrix(old: dict, new: dict | None) -> dict:
 def _trim_matrix(m: dict | None, n: int) -> dict | None:
     if m is None or len(m["dates"]) <= n:
         return m
-    out = {"dates": m["dates"][-n:], "symbols": m["symbols"]}
+    out = {"dates": m["dates"][-n:], "symbols": m["symbols"], "feed": m.get("feed")}
     for k in ("open", "high", "low", "close", "volume"):
         out[k] = m[k][-n:]
     return out

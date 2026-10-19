@@ -1,377 +1,363 @@
+// Application shell: top navigation (hash routed pages), theme, alerts bell, connection status,
+// WebSocket event handling (agent ↔ active chart view sync, drawings, alerts, navigation).
 import 'dart:async';
 import 'dart:js_interop';
+import 'dart:js_interop_unsafe';
 
 import 'package:web/web.dart';
 
-import '../chart/chart_view.dart';
+import '../chart/chart_page.dart';
+import '../chart/chart_panel.dart';
+import '../core/json.dart';
 import '../core/models.dart';
 import 'api.dart';
 import 'dom.dart';
 import 'events.dart';
-import 'sidebar.dart';
-import 'toolbar.dart';
-import 'topbar.dart';
+import 'kit/icons.dart';
+import 'kit/overlay.dart';
+import 'kit/state.dart';
+import 'pages/calendar.dart';
+import 'pages/heatmap.dart';
+import 'pages/markets.dart';
+import 'pages/screener.dart';
+import 'panels/dock.dart';
+import 'store.dart';
+
+const pages = [
+  ('chart', 'Chart', 'candles'),
+  ('screener', 'Screener', 'filter'),
+  ('heatmap', 'Heatmap', 'map'),
+  ('markets', 'Markets', 'globe'),
+  ('calendar', 'Calendar', 'calendar'),
+];
 
 class App {
   final HTMLElement mount;
-  ChartViewState view = const ChartViewState();
-  Quote? quote;
-  List<IndicatorSpec> specs = const [];
-  List<Annotation> annotations = const [];
-  String? selectedId;
-  String tool = 'select';
-  List<Activity> activity = [];
+  final HTMLElement _nav = h('header.app-nav');
+  final HTMLElement _pages = h('main.app-pages');
+  late final Dock dock;
+  late final ChartPage chartPage;
+  final Map<String, HTMLElement> _pageRoots = {};
+  final Map<String, Object> _pageObjects = {};
+  final Scope _scope = Scope();
   int _activitySeq = 0;
-  String status = 'connecting';
-  String provider = '…';
-  String? _toast;
-  Timer? _toastTimer, _quoteTimer;
-  int _quoteSeq = 0;
-  String _symbolLoaded = '';
-
-  late final TopBar topbar;
-  late final Toolbar toolbar;
-  late final ChartView chart;
-  late final Sidebar sidebar;
-  final HTMLElement _toastEl = h('div.toast', null, {'role': 'status'});
+  bool _applyingRemoteView = false;
+  bool _firstHello = true;
+  final _viewSync = Debouncer(400);
 
   App(this.mount);
 
-  String get symbol => view.symbol;
-
   Future<void> start() async {
-    replace(mount, h('div.boot', 'Connecting to Autobench…'));
-    try {
-      view = await api.view();
-    } catch (_) {
-      view = const ChartViewState();
-    }
-    topbar = TopBar(
-      onSymbol: (s) => changeView(view.copyWith(symbol: s)),
-      onInterval: (i) => changeView(view.copyWith(interval: i)),
-      onIndicators: (r) => changeView(view.copyWith(indicators: r)),
-    );
-    toolbar = Toolbar(
-      onTool: setTool,
-      onClearMine: () => _clear('user', 'your'),
-      onClearAgent: () => _clear('agent', 'agent'),
-    );
-    chart = ChartView(
-      onSelect: select,
-      onDraw: _draw,
-      onError: notify,
-      onLoaded: (source) {
-        if (source.isNotEmpty && !provider.startsWith(source)) {
-          provider = source;
-          _renderTop();
-        }
-      },
-    );
-    sidebar = Sidebar(
-      onTab: _showTab,
-      onShowTag: (tag) {
-        sidebar.drawings.tagFilter = tag;
-        _showTab('drawings');
-      },
-      onSelect: select,
-      onToggle: (a) => api.updateAnnotation(a.id, {'visible': !a.visible}).catchError((Object e) {
-        notify('$e');
-        return a;
-      }),
-      onDelete: _delete,
-      onTagFilter: (tag) {
-        sidebar.drawings.tagFilter = tag;
-        sidebar.drawings.refresh();
-      },
-      onPick: (s) => changeView(view.copyWith(symbol: s)),
-    );
-    _toastEl.isHidden = true;
-    replace(mount, h('div.app', [
-      topbar.root,
-      h('main.main', [toolbar.root, chart.root, sidebar.root]),
-      _toastEl,
-    ]));
-    toolbar.active = tool;
-    _applyView();
-    _showTab('overview');
+    installTooltips();
+    await store.restore();
+    _applyTheme();
+    final fromHash = _pageFromHash();
+    if (fromHash != null) store.page.value = fromHash;
 
-    api.indicatorList().then((s) {
-      specs = s;
-      _renderTop();
-    }, onError: (Object _) {});
+    dock = Dock(onCreateAlert: (s) => showAlertDialog(s));
+    chartPage = ChartPage(dock.root);
+    _pageRoots['chart'] = chartPage.root;
+    _pageObjects['chart'] = chartPage;
+    replace(mount, h('div.app', [_nav, _pages]));
+    _scope.listen(store.page, (_) => _showPage(), now: true);
+    _scope.listen(store.theme, (_) => _applyTheme());
+    _scope.listen(store.status, (_) => _renderNav());
+    _scope.listen(store.provider, (_) => _renderNav());
+    _scope.listen(store.alerts, (_) => _renderNav());
+    window.addEventListener('hashchange', ((Event _) {
+      final p = _pageFromHash();
+      if (p != null) store.page.value = p;
+    }).toJS);
+    window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', ((Event _) => _applyTheme()).toJS);
+    window.addEventListener('create-alert', ((CustomEvent e) {
+      showAlertDialog((e.detail as JSString).toDart);
+    }).toJS);
+
+    // agent sync: what the user looks at on the active chart is the shared "view"
+    void watchActive() {
+      for (final c in store.charts) {
+        for (final o in <Obs<Object?>>[c.symbol, c.interval, c.indicators]) {
+          _scope.add(o.listen((_) {
+            if (identical(c, store.activeChart)) _pushView();
+          }));
+        }
+      }
+    }
+
+    watchActive();
+    _scope.listen(store.layoutVersion, (_) => watchActive());
+    _scope.listen(store.active, (_) => _pushView());
+
+    attempt(api.indicatorList()).then((s) {
+      if (s != null) store.specs.value = s;
+    });
     api.health().then((hj) {
-      provider = '${hj['bar_provider'].s ?? '?'}${hj['feed'].s != null ? '/${hj['feed'].s}' : ''}';
-      _renderTop();
-    }, onError: (Object _) {
-      provider = 'offline';
-      _renderTop();
-    });
-    EventStream(onEvent: _onEvent, onStatus: (s) {
-      status = s;
-      _renderTop();
-    });
-    window.addEventListener('keydown', ((KeyboardEvent e) => _onKey(e)).toJS);
+      store.provider.value = '${hj['bar_provider'].s ?? '?'}${hj['feed'].s != null ? '/${hj['feed'].s}' : ''}';
+    }, onError: (Object _) => store.provider.value = 'offline');
+    store.loadAlerts();
+    EventStream(onEvent: _onEvent, onStatus: (s) => store.status.value = s);
+    _renderNav();
   }
 
-  // ---------------------------------------------------------------- view
+  String? _pageFromHash() {
+    final hash = window.location.hash.replaceFirst('#', '').split('/').first;
+    return pages.any((p) => p.$1 == hash) ? hash : null;
+  }
 
-  /// Applies [view] to every component; reloads per-symbol data when the symbol changed.
-  void _applyView() {
-    chart.show(view.symbol, view.interval);
-    chart.setIndicators(view.indicators);
-    chart.setRange(view.fromTime, view.toTime);
-    if (view.symbol != _symbolLoaded) {
-      _symbolLoaded = view.symbol;
-      selectedId = null;
-      sidebar.drawings.tagFilter = null;
-      _setSymbolOnPanels();
-      _loadAnnotations();
-      _startQuotes();
+  // ---------------------------------------------------------------- navigation
+
+  void _renderNav() {
+    final current = store.page.value;
+    final triggered = store.alerts.value.where((a) => a.status == 'triggered').length;
+    final active = store.alerts.value.where((a) => a.status == 'active').length;
+    final st = store.status.value;
+    replace(_nav, [
+      h('a.brand', [h('img', null, {'src': 'favicon.svg', 'alt': '', 'width': '22', 'height': '22'}), h('span', 'Autobench')],
+          {'href': '#chart'}),
+      h('nav.page-tabs', [
+        for (final (key, label, ic) in pages)
+          h('a.page-tab${key == current ? '.on' : ''}', [icon(ic, size: 16), h('span', label)],
+              {'href': '#$key', 'aria-current': key == current ? 'page' : 'false'}),
+      ]),
+      h('span.spacer'),
+      h('button.nav-btn', [icon('alarm', size: 17), if (triggered > 0) h('span.nav-badge', '$triggered')], {
+        'type': 'button',
+        'data-tip': '$active active alert${active == 1 ? '' : 's'}${triggered > 0 ? ', $triggered triggered' : ''}',
+        'aria-label': 'Alerts',
+      }, {
+        'click': (_) {
+          store.page.value = 'chart';
+          store.panel.value = 'alerts';
+        },
+      }),
+      h('button.nav-btn', icon(_themeIcon, size: 17), {'type': 'button', 'data-tip': 'Theme: ${store.theme.value}', 'aria-label': 'Theme'}, {
+        'click': (e) => showMenu([
+              for (final (k, label) in [('system', 'System'), ('dark', 'Dark'), ('light', 'Light')])
+                MenuItem(label, checked: store.theme.value == k, onSelect: () {
+                  store.theme.value = k;
+                  store.save();
+                }),
+            ], anchor: e.currentTarget as Element, align: 'end'),
+      }),
+      h('button.nav-btn', icon('keyboard', size: 17),
+          {'type': 'button', 'data-tip': 'Keyboard shortcuts (?)', 'aria-label': 'Shortcuts'}, {'click': (_) => showShortcuts()}),
+      h('div.conn', [
+        h(st == 'open' ? 'span.dot.ok' : 'span.dot.warn'),
+        h('span.muted.small', '${st == 'open' ? 'live' : st} · ${store.provider.value}'),
+      ], {'data-tip': 'Live connection to the backend; agent updates arrive here', 'data-tip-pos': 'bottom'}),
+    ]);
+  }
+
+  String get _themeIcon => store.theme.value == 'light' ? 'sun' : store.theme.value == 'dark' ? 'moon' : 'settings';
+
+  void _showPage() {
+    final key = store.page.value;
+    if (_pageFromHash() != key) window.history.replaceState(null, '', '#$key');
+    _pageRoots.putIfAbsent(key, () => _createPage(key));
+    for (final e in _pageRoots.entries) {
+      if (!_pages.contains(e.value)) _pages.append(e.value);
+      e.value.isHidden = e.key != key;
     }
-    _renderTop();
-  }
-
-  void _setSymbolOnPanels() {
-    sidebar.overview.symbol = symbol;
-    sidebar.overview.quote = null;
-    sidebar.agent.symbol = symbol;
-    sidebar.notes.symbol = symbol;
-    sidebar.watchlist.symbol = symbol;
-    sidebar.refreshIfShown(sidebar.tab);
-  }
-
-  void changeView(ChartViewState next) {
-    final reset = next.symbol != view.symbol || next.interval != view.interval;
-    view = next;
-    _applyView();
-    api.setView(next, resetRange: reset).catchError((Object e) {
-      notify('$e');
-      return next;
-    });
-  }
-
-  void _startQuotes() {
-    _quoteTimer?.cancel();
-    quote = null;
-    Future<void> load() async {
-      final seq = ++_quoteSeq;
-      final s = symbol;
-      try {
-        final q = await api.quote(s);
-        if (seq != _quoteSeq || s != symbol) return;
-        quote = q;
-      } catch (_) {
-        if (seq == _quoteSeq) quote = null;
-      }
-      sidebar.overview.quote = quote;
-      _renderTop();
-    }
-
-    load();
-    _quoteTimer = Timer.periodic(const Duration(seconds: 15), (_) => load());
-  }
-
-  void _renderTop() => topbar.update(
-        symbol: view.symbol,
-        interval: view.interval,
-        quote: quote,
-        specs: specs,
-        indicators: view.indicators,
-        status: status,
-        provider: provider,
-      );
-
-  // ---------------------------------------------------------------- drawings
-
-  Future<void> _loadAnnotations() async {
-    final s = symbol;
-    try {
-      final list = await api.annotations(s);
-      if (s != symbol) return;
-      annotations = list;
-      _renderAnnotations();
-    } catch (e) {
-      notify('$e');
-    }
-  }
-
-  void _renderAnnotations() {
-    if (selectedId != null && !annotations.any((a) => a.id == selectedId)) selectedId = null;
-    chart.setAnnotations(annotations, selectedId);
-    sidebar.drawings
-      ..annotations = annotations
-      ..selectedId = selectedId;
-    sidebar.refreshIfShown('drawings');
-    sidebar.renderTabs();
-  }
-
-  void _upsert(Annotation a) {
-    final i = annotations.indexWhere((x) => x.id == a.id);
-    annotations = i < 0 ? [...annotations, a] : [...annotations.sublist(0, i), a, ...annotations.sublist(i + 1)];
-  }
-
-  void select(String? id) {
-    selectedId = id;
-    _renderAnnotations();
-  }
-
-  void setTool(String t) {
-    tool = t;
-    toolbar.active = t;
-    chart.currentTool = t;
-  }
-
-  Future<void> _draw(String type, List<Point> points, {String? text}) async {
-    var pts = points;
-    if ((type == 'long_position' || type == 'short_position') && points.length == 2) {
-      // two clicks: entry then target; the stop defaults to half the target distance (2R)
-      final e = points[0], t = points[1];
-      final ep = e.price!, tp = t.price!;
-      final ok = type == 'long_position' ? tp > ep : tp < ep;
-      if (!ok) {
-        notify(type == 'long_position' ? 'Long: click the target above the entry' : 'Short: click the target below the entry');
-        return;
-      }
-      final stop = ep - (tp - ep) / 2;
-      pts = [e, Point(t.time, double.parse(stop.toStringAsFixed(4))), Point(t.time, tp)];
-    }
-    try {
-      final created = await api.createAnnotation(symbol, type, pts, text: text);
-      _upsert(created);
-      selectedId = created.id;
-      setTool('select');
-      _renderAnnotations();
-    } catch (e) {
-      notify('$e');
-    }
-  }
-
-  Future<void> _delete(Annotation a) async {
-    try {
-      await api.deleteAnnotation(a.id);
-      annotations = annotations.where((x) => x.id != a.id).toList();
-      if (selectedId == a.id) selectedId = null;
-      _renderAnnotations();
-    } catch (e) {
-      notify('$e');
-    }
-  }
-
-  Future<void> _clear(String author, String whose) async {
-    try {
-      final n = await api.deleteAnnotations(symbol, author: author);
-      notify('Removed $n $whose drawings');
-    } catch (e) {
-      notify('$e');
-    }
-  }
-
-  void _onKey(KeyboardEvent e) {
-    if (typingIn(e.target)) return;
-    final id = selectedId;
-    if ((e.key == 'Delete' || e.key == 'Backspace') && id != null) {
-      for (final a in annotations) {
-        if (a.id == id) {
-          e.preventDefault();
-          _delete(a);
-          break;
+    switch (_pageObjects[key]) {
+      case ScreenerPage p:
+        p.onShow();
+      case HeatmapPage p:
+        p.onShow();
+      case MarketsPage p:
+        p.onShow();
+      case CalendarPage p:
+        p.onShow();
+      case ChartPage p:
+        for (final panel in p.panels) {
+          panel.engine.invalidate();
         }
+    }
+    _renderNav();
+    store.save();
+  }
+
+  HTMLElement _createPage(String key) {
+    switch (key) {
+      case 'screener':
+        final p = ScreenerPage();
+        _pageObjects[key] = p;
+        return p.root;
+      case 'heatmap':
+        final p = HeatmapPage();
+        _pageObjects[key] = p;
+        return p.root;
+      case 'markets':
+        final p = MarketsPage();
+        _pageObjects[key] = p;
+        return p.root;
+      case 'calendar':
+        final p = CalendarPage();
+        _pageObjects[key] = p;
+        return p.root;
+      default:
+        return chartPage.root;
+    }
+  }
+
+  void _applyTheme() {
+    final t = store.theme.value;
+    final prefersLight = window.matchMedia('(prefers-color-scheme: light)').matches;
+    final dark = t == 'dark' || (t == 'system' && !prefersLight);
+    document.documentElement!.setAttribute('data-theme', dark ? 'dark' : 'light');
+    // canvases read their colors from CSS variables
+    Timer.run(() {
+      for (final p in chartPage.panels) {
+        p.engine.refreshTheme();
       }
+      final hm = _pageObjects['heatmap'];
+      if (hm is HeatmapPage) hm.redraw();
+    });
+    if (_nav.isConnected) _renderNav();
+  }
+
+  // ---------------------------------------------------------------- agent view sync
+
+  void _pushView() {
+    if (_applyingRemoteView) return;
+    _viewSync(() {
+      final c = store.activeChart;
+      request('/api/view', method: 'PUT', body: {
+        'symbol': c.symbol.value,
+        'interval': c.interval.value,
+        'indicators': [for (final r in c.indicators.value) r.toJson()],
+      }).catchError((Object _) => const J(null));
+    });
+  }
+
+  void _applyRemoteView(J v) {
+    final c = store.activeChart;
+    _applyingRemoteView = true;
+    try {
+      if (v['symbol'].s != null) c.symbol.value = v['symbol'].s!;
+      if (v['interval'].s != null) c.interval.value = v['interval'].s!;
+      if (v['indicators'].v is List) {
+        c.indicators.value = [for (final r in v['indicators'].list) IndicatorRef.fromJson(r)];
+      }
+    } finally {
+      _applyingRemoteView = false;
     }
-    if (e.key == 'Escape') {
-      setTool('select');
-      select(null);
+    final from = v['from_time'].i;
+    if (from != null) {
+      // once bars for the (possibly new) symbol have loaded
+      Timer(const Duration(milliseconds: 1200), () => chartPage.activePanel?.setVisibleTimes(from, v['to_time'].i));
     }
   }
 
-  // ---------------------------------------------------------------- sidebar & activity
-
-  void _showTab(String t) {
-    if (t == 'agent') sidebar.unseen = 0;
-    sidebar.show(t);
-  }
+  // ---------------------------------------------------------------- events
 
   void _pushActivity(String text, String kind, String? sym) {
     final now = DateTime.now();
-    final last = activity.isEmpty ? null : activity.first;
-    // collapse bursts ("Drew 3 objects") from one batch
-    if (last != null &&
-        last.kind == kind &&
-        last.symbol == sym &&
-        now.difference(last.at).inSeconds < 3 &&
-        last.text.startsWith('Drew') &&
-        text.startsWith('Drew')) {
+    final list = store.activity.value;
+    final last = list.isEmpty ? null : list.first;
+    if (last != null && last.kind == kind && last.symbol == sym && now.difference(last.at).inSeconds < 3 &&
+        last.text.startsWith('Drew') && text.startsWith('Drew')) {
       final m = RegExp(r'Drew (\d+) objects?').firstMatch(last.text);
       final count = (m == null ? 1 : int.parse(m.group(1)!)) + 1;
-      activity = [Activity(last.id, now, 'Drew $count objects on $sym', sym, kind), ...activity.skip(1)];
+      store.activity.value = [Activity(last.id, now, 'Drew $count objects on $sym', sym, kind), ...list.skip(1)];
     } else {
-      activity = [Activity(++_activitySeq, now, text, sym, kind), ...activity.take(99)];
+      store.activity.value = [Activity(++_activitySeq, now, text, sym, kind), ...list.take(199)];
     }
-    if (kind == 'agent' && sidebar.tab != 'agent') sidebar.unseen++;
-    sidebar.agent
-      ..activity = activity
-      ..render();
-    sidebar.renderTabs();
+    if (kind == 'agent' && store.panel.value != 'agent') store.unseenAgent.value++;
   }
 
   void _onEvent(ServerEvent e) {
     final d = e.data;
     switch (e.type) {
       case 'hello':
-        if (d['view'].truthy) _applyRemoteView(ChartViewState.fromJson(d['view']));
+        // only on the first connection, and only if the agent changed the view while we were away
+        if (_firstHello && d['view']['updated_by'].s == 'agent') _applyRemoteView(d['view']);
+        _firstHello = false;
       case 'view.changed':
-        _applyRemoteView(ChartViewState.fromJson(d));
         if (d['updated_by'].s == 'agent') {
+          _applyRemoteView(d);
           _pushActivity('Switched chart to ${d['symbol'].s} · ${d['interval'].s}', 'agent', d['symbol'].s);
+          if (store.page.value != 'chart') store.page.value = 'chart';
         }
       case 'annotation.created':
         final a = Annotation.fromJson(d);
-        if (a.symbol == symbol) {
-          _upsert(a);
-          _renderAnnotations();
-        }
+        store.upsertDrawing(a);
         if (a.author == 'agent') _pushActivity('Drew 1 object on ${a.symbol}', 'agent', a.symbol);
       case 'annotation.updated':
-        final a = Annotation.fromJson(d);
-        if (annotations.any((x) => x.id == a.id)) {
-          _upsert(a);
-          _renderAnnotations();
-        }
+        store.upsertDrawing(Annotation.fromJson(d));
       case 'annotation.deleted':
-        final id = d['id'].s;
-        if (annotations.any((x) => x.id == id)) {
-          annotations = annotations.where((x) => x.id != id).toList();
-          _renderAnnotations();
-        }
+        store.removeDrawing(d['id'].s ?? '');
       case 'analysis.created':
-        sidebar.refreshIfShown('agent');
+        store.analysesVersion.value++;
         final action = (d['action'].s ?? '').replaceAll('_', ' ').toUpperCase();
         final conf = ((d['confidence'].d ?? 0) * 100).round();
         _pushActivity('Saved analysis: $action ${d['symbol'].s} ($conf%)', d['author'].s == 'agent' ? 'agent' : 'user',
             d['symbol'].s);
+        if (d['author'].s == 'agent') {
+          toast(d['summary'].s ?? '', title: '✦ $action ${d['symbol'].s} · $conf% confidence', ms: 9000, actionLabel: 'Open',
+              onAction: () {
+            store.panel.value = 'agent';
+            store.page.value = 'chart';
+          });
+        }
       case 'note.saved' || 'note.deleted':
-        sidebar.refreshIfShown('notes');
+        store.notesVersion.value++;
         if (e.type == 'note.saved' && d['author'].s == 'agent') {
           _pushActivity('Saved note: ${d['title'].s}', 'agent', d['symbol'].s);
         }
       case 'watchlist.updated' || 'watchlist.deleted':
-        sidebar.refreshIfShown('watchlist');
+        store.watchlistVersion.value++;
+      case 'alert.created' || 'alert.updated' || 'alert.deleted':
+        store.loadAlerts();
+        if (e.type == 'alert.created' && d['author'].s == 'agent') {
+          _pushActivity('Created alert: ${d['description'].s}', 'agent', d['symbol'].s);
+        }
+      case 'alert.triggered':
+        store.loadAlerts();
+        _chime();
+        final sym = d['symbol'].s ?? '';
+        toast(d['message'].s ?? 'Triggered at ${d['trigger_price'].d ?? ''}', title: '⏰ ${d['description'].s}', kind: 'alert',
+            ms: 0, actionLabel: 'Open chart', onAction: () {
+          store.activeChart.symbol.value = sym;
+          store.page.value = 'chart';
+        });
+      case 'ui.navigate':
+        final page = d['page'].s;
+        if (page == 'chart' && d['symbol'].s != null) store.activeChart.symbol.value = d['symbol'].s!;
+        if (page == 'screener' && d['screen'].v is Map) {
+          store.screenerState.value = Map<String, Object?>.from(d['screen'].v as Map);
+        }
+        if (page == 'heatmap' && d['period'].s != null) {
+          store.heatmapState.value = {...store.heatmapState.value, 'period': d['period'].s};
+        }
+        if (page != null && pages.any((p) => p.$1 == page)) store.page.value = page;
+        _pushActivity('Opened ${page ?? 'a page'} for you', 'agent', d['symbol'].s);
+      case 'screens.updated':
+        final s = _pageObjects['screener'];
+        if (s is ScreenerPage) s.reloadSaved();
     }
   }
 
-  void _applyRemoteView(ChartViewState v) {
-    view = v;
-    _applyView();
-  }
-
-  void notify(String msg) {
-    _toast = msg;
-    _toastEl
-      ..textContent = msg
-      ..isHidden = false;
-    _toastTimer?.cancel();
-    _toastTimer = Timer(const Duration(seconds: 5), () {
-      if (_toast == msg) _toastEl.isHidden = true;
-    });
+  /// A short two-tone chime for triggered alerts (Web Audio; silent if unavailable).
+  void _chime() {
+    try {
+      final ctor = globalContext['AudioContext'] as JSFunction?;
+      if (ctor == null) return;
+      final ac = ctor.callAsConstructor<JSObject>();
+      final now = (ac['currentTime'] as JSNumber).toDartDouble;
+      for (final (i, f) in [(0, 880.0), (1, 1320.0)]) {
+        final start = now + i * 0.16;
+        final osc = ac.callMethod<JSObject>('createOscillator'.toJS);
+        final gain = ac.callMethod<JSObject>('createGain'.toJS);
+        (osc['frequency'] as JSObject)['value'] = f.toJS;
+        final g = gain['gain'] as JSObject;
+        g.callMethod('setValueAtTime'.toJS, 0.0001.toJS, start.toJS);
+        g.callMethod('exponentialRampToValueAtTime'.toJS, 0.12.toJS, (start + 0.02).toJS);
+        g.callMethod('exponentialRampToValueAtTime'.toJS, 0.0001.toJS, (start + 0.25).toJS);
+        osc.callMethod('connect'.toJS, gain);
+        gain.callMethod('connect'.toJS, ac['destination']);
+        osc.callMethod('start'.toJS, start.toJS);
+        osc.callMethod('stop'.toJS, (start + 0.3).toJS);
+      }
+    } catch (_) {}
   }
 }

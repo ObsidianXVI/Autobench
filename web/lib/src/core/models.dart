@@ -156,11 +156,12 @@ class Quote {
   final String symbol, source;
   final String? feed;
   final double price;
-  final double? change, changePct;
-  const Quote(this.symbol, this.source, this.feed, this.price, this.change, this.changePct);
+  final double? change, changePct, dayHigh, dayLow, volume;
+  const Quote(this.symbol, this.source, this.feed, this.price, this.change, this.changePct,
+      [this.dayHigh, this.dayLow, this.volume]);
 
   factory Quote.fromJson(J j) => Quote(j['symbol'].s ?? '', j['source'].s ?? '', j['feed'].s, j['price'].d ?? 0,
-      j['change'].d, j['change_pct'].d);
+      j['change'].d, j['change_pct'].d, j['day_high'].d, j['day_low'].d, j['volume'].d);
 }
 
 class SymbolMatch {

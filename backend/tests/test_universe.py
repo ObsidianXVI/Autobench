@@ -171,8 +171,7 @@ def test_saved_screens_roundtrip(uni):
 def test_snapshot_has_every_field(uni):
     snap = screener.snapshot("NVDA")
     assert {f.key for f in screener.FIELDS} <= set(snap)
-    with pytest.raises(KeyError):
-        screener.snapshot("ZZZZ")
+    assert screener.snapshot("ZZZZ") == {"symbol": "ZZZZ", "in_universe": False}
 
 
 def test_heatmap_tree_and_weighted_sector_value(uni):
@@ -180,7 +179,7 @@ def test_heatmap_tree_and_weighted_sector_value(uni):
     tech = next(s for s in hm["sectors"] if s["name"] == "Information Technology")
     stocks = [x for i in tech["industries"] for x in i["stocks"]]
     w = sum(x["market_cap"] for x in stocks)
-    assert tech["value"] == pytest.approx(sum(x["value"] * x["market_cap"] for x in stocks) / w, rel=1e-6)
+    assert tech["value"] == pytest.approx(sum(x["value"] * x["market_cap"] for x in stocks) / w, abs=1e-3)  # values are rounded to 4 dp
     assert [s["market_cap"] for s in hm["sectors"]] == sorted([s["market_cap"] for s in hm["sectors"]], reverse=True)
     with pytest.raises(ValueError):
         screener.heatmap("all", "2d")

@@ -27,7 +27,8 @@ def get_news(symbol: str | None = None, limit: int = 15, days: int = 14, include
                 if not sym:
                     raise
         if not sym:
-            raise ProviderError("Market-wide news requires Alpaca credentials")
+            # no market-wide feed without Alpaca: S&P 500 headlines are the closest proxy
+            return {"source": "yahoo (SPY headlines)", "items": yahoo().news("SPY", limit)}
         return {"source": "yahoo", "items": yahoo().news(sym, limit)}
 
     data = db.cached(key, 600, fetch)

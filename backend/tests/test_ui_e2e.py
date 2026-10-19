@@ -25,6 +25,8 @@ playwright_api = pytest.importorskip("playwright.sync_api")
 if not BUILD.exists():
     pytest.skip("web UI not built (cd web && dart run tool/build.dart)", allow_module_level=True)
 
+MOD = "Meta" if sys.platform == "darwin" else "Control"
+
 
 def _free_port() -> int:
     with socket.socket() as s:
@@ -36,7 +38,7 @@ def _free_port() -> int:
 def server(tmp_path_factory):
     port = _free_port()
     env = {**os.environ, "AUTOBENCH_BAR_PROVIDER": "fake", "ALPACA_API_KEY_ID": "", "ALPACA_API_SECRET_KEY": "",
-           "AUTOBENCH_DB_PATH": str(tmp_path_factory.mktemp("ui") / "ui.db")}
+           "AUTOBENCH_BACKGROUND": "1", "AUTOBENCH_DB_PATH": str(tmp_path_factory.mktemp("ui") / "ui.db")}
     log = open(tmp_path_factory.mktemp("ui-log") / "server.log", "w")
     proc = subprocess.Popen([sys.executable, "-m", "autobench", "serve", "--port", str(port)], env=env,
                             stdout=log, stderr=subprocess.STDOUT)
@@ -50,6 +52,13 @@ def server(tmp_path_factory):
     else:
         proc.kill()
         pytest.fail("server did not start")
+    # build the (fake) market universe up front so screener/heatmap tests do not wait on it
+    httpx.post(f"{base}/api/universe/refresh", timeout=10)
+    for _ in range(150):
+        st = httpx.get(f"{base}/api/universe/status").json()
+        if all(st[k]["rows"] for k in ("listings", "fundamentals", "bars")) and not any(v["refreshing"] for v in st.values()):
+            break
+        time.sleep(0.2)
     yield base
     proc.terminate()
     try:
@@ -72,16 +81,25 @@ def browser():
         b.close()
 
 
+def _reset(server):
+    # every test starts from the same state (tests share one server)
+    httpx.put(f"{server}/api/ui-state", json={})
+    httpx.put(f"{server}/api/view", json={"symbol": "SPY", "interval": "1d", "indicators": [],
+                                          "from_time": None, "to_time": None})
+    for a in httpx.get(f"{server}/api/alerts").json():
+        httpx.delete(f"{server}/api/alerts/{a['id']}")
+    for sym in ("SPY", "NVDA", "AMD", "AAPL", "MSFT"):
+        httpx.delete(f"{server}/api/annotations", params={"symbol": sym})
+
+
 @pytest.fixture
 def page(browser, server):
-    pg = browser.new_page(viewport={"width": 1400, "height": 860}, color_scheme="dark")
+    _reset(server)
+    pg = browser.new_page(viewport={"width": 1440, "height": 860}, color_scheme="dark")
     errors: list[str] = []
     pg.on("pageerror", lambda e: errors.append(f"{e}\n{e.stack}"))
     pg.on("console", lambda m: m.type == "error" and errors.append(m.text))
-    # every test starts from the same shared view (tests share one server)
-    httpx.put(f"{server}/api/view", json={"symbol": "SPY", "interval": "1d", "indicators": [],
-                                          "from_time": None, "to_time": None})
-    pg.goto(server)
+    pg.goto(f"{server}/#chart")
     pg.wait_for_function("window.__autobench && __autobench.bars() > 0", timeout=20000)
     yield pg
     pg.close()
@@ -108,93 +126,109 @@ def annotations(base: str, symbol: str) -> list[dict]:
 
 
 def chart_box(page):
-    return page.locator(".chart canvas").bounding_box()
+    return page.locator(".chart canvas").first.bounding_box()
 
 
-def test_loads_chart_with_legend_and_axes(page):
-    legend = page.inner_text(".legend")
-    assert "SPY" in legend and " O " in legend and " C " in legend
+def legend_symbol(page) -> str:
+    return page.locator(".legend-symbol").first.inner_text()
+
+
+# ------------------------------------------------------------------------------- chart
+
+
+def test_loads_chart_with_default_indicators_and_paints(page):
+    assert legend_symbol(page) == "SPY"
+    page.wait_for_function("__autobench.panes() === 2 && __autobench.series() >= 3")  # SMA50, SMA200, RSI pane
+    assert "sma(50)" in page.inner_text(".legend") and "rsi(14)" in page.inner_text(".pane-legends")
     lo, hi = page.evaluate("__autobench.visibleRange()")
-    assert hi - lo > 50  # a sensible initial window, not the whole history
-    # the canvas actually paints: background and candle colors are present
+    assert hi - lo > 50
     colors = page.evaluate("""(() => { const c = document.querySelector('.chart canvas');
         const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; const s = new Set();
         for (let i = 0; i < d.length; i += 4 * 13) s.add(d[i] + ',' + d[i+1] + ',' + d[i+2]); return s.size; })()""")
     assert colors > 20
+    assert "New York" in page.inner_text("#market-clock")
 
 
-def test_agent_controls_view_and_draws_live(page, server):
+def test_agent_controls_view_draws_and_navigates(page, server):
     mcp_call(server, "set_chart_view", {"symbol": "NVDA", "interval": "1d",
                                         "indicators": [{"name": "sma", "params": {"length": 20}}, {"name": "rsi"},
                                                        {"name": "macd"}]})
     page.wait_for_function("document.querySelector('.legend-symbol').textContent === 'NVDA'", timeout=10000)
-    page.wait_for_function("__autobench.panes() === 3 && __autobench.series() >= 5", timeout=10000)
-    assert "sma(20)" in page.inner_text(".legend")
-
+    page.wait_for_function("__autobench.panes() === 3", timeout=10000)
     bars = httpx.get(f"{server}/api/bars/NVDA", params={"interval": "1d", "lookback": "1y"}).json()["bars"]
     last = bars[-1]
     mcp_call(server, "draw_annotations", {"symbol": "NVDA", "items": [
         {"type": "horizontal_line", "points": [{"price": last["close"] * 1.05}], "text": "resistance"},
         {"type": "long_position", "points": [{"time": last["time"], "price": last["close"]},
                                              {"time": last["time"] + 20 * 86400, "price": last["close"] * 0.95},
-                                             {"time": last["time"] + 20 * 86400, "price": last["close"] * 1.1}],
-         "tag": "plan"},
+                                             {"time": last["time"] + 20 * 86400, "price": last["close"] * 1.1}]},
     ]})
     page.wait_for_function("__autobench.drawn() === 2", timeout=10000)
-    # the future-dated trade plan is on screen (right space was added)
     x = page.evaluate(f"__autobench.xOfTime({last['time'] + 20 * 86400})")
-    assert 0 < x < chart_box(page)["width"]
-    page.click(".tabs button:has-text('Agent')")
+    assert 0 < x < chart_box(page)["width"]  # the future-dated plan is on screen
+    page.click("button[aria-label='Agent activity & analyses']")
     page.wait_for_selector(".activity li.agent")
     assert "Drew 2 objects on NVDA" in page.inner_text(".activity")
+    # the agent opens the screener for the user
+    mcp_call(server, "show_in_ui", {"page": "screener", "screen": {"signal": "top_gainers"}})
+    page.wait_for_selector(".screener-page:not([hidden]) .chip.sig", timeout=10000)
+    assert "Top Gainers" in page.inner_text(".scr-chips")
 
 
-def test_user_draws_selects_and_deletes(page, server):
+def test_user_draws_drags_undoes_and_deletes(page, server):
     box = chart_box(page)
-    before = len(annotations(server, "SPY"))
-    page.click("button[aria-label='Horizontal line']")
+    page.mouse.click(box["x"] + 300, box["y"] + 300)
+    page.keyboard.press("Alt+KeyH")
     page.mouse.click(box["x"] + box["width"] * 0.4, box["y"] + box["height"] * 0.3)
-    page.wait_for_function(f"__autobench.drawn() === {before + 1}")
-    created = [a for a in annotations(server, "SPY") if a["author"] == "user"][-1]
-    assert created["type"] == "horizontal_line"
-    # tool returns to select; click empty space deselects, clicking the line selects it again
-    page.mouse.click(box["x"] + 30, box["y"] + box["height"] * 0.6)
-    y = page.evaluate(f"__autobench.yOfPrice({created['points'][0]['price']})")
-    page.mouse.click(box["x"] + box["width"] * 0.2, box["y"] + y)
-    page.click(".tabs button:has-text('Drawings')")
-    assert page.locator(".drawings li.selected").count() == 1
-    page.locator(".chart canvas").hover()
+    page.wait_for_function("__autobench.drawn() === 1")
+    price0 = annotations(server, "SPY")[0]["points"][0]["price"]
+    assert page.is_visible(".draw-toolbar")  # the new drawing is selected
+    hx, hy = page.evaluate("__autobench.chart.active().handles()[0]")
+    page.mouse.move(box["x"] + hx, box["y"] + hy)
+    page.mouse.down()
+    page.mouse.move(box["x"] + hx, box["y"] + hy - 60, steps=6)
+    page.mouse.up()
+    check = "fetch('/api/annotations?symbol=SPY').then(r => r.json()).then(a => a.length && a[0].points[0].price {})"
+    page.wait_for_function(check.format(f"> {price0}"))
+    moved = annotations(server, "SPY")[0]["points"][0]["price"]
+    page.keyboard.press(f"{MOD}+KeyZ")
+    page.wait_for_function(check.format(f"=== {price0}"))
+    page.keyboard.press(f"{MOD}+Shift+KeyZ")
+    page.wait_for_function(check.format(f"=== {moved}"))
     page.keyboard.press("Delete")
-    page.wait_for_function(f"__autobench.drawn() === {before}")
-    assert len(annotations(server, "SPY")) == before
+    page.wait_for_function("__autobench.drawn() === 0")
+    assert annotations(server, "SPY") == []
+    page.keyboard.press(f"{MOD}+KeyZ")  # undoing the delete re-creates the drawing
+    page.wait_for_function("__autobench.drawn() === 1")
 
 
-def test_trade_plan_and_text_tools(page, server):
+def test_trade_plan_text_and_styles(page, server):
     box = chart_box(page)
-    page.click("button[aria-label^='Long position']")
-    page.mouse.click(box["x"] + box["width"] * 0.5, box["y"] + box["height"] * 0.5)
-    page.mouse.move(box["x"] + box["width"] * 0.6, box["y"] + box["height"] * 0.3)
-    page.mouse.click(box["x"] + box["width"] * 0.6, box["y"] + box["height"] * 0.3)
-    page.wait_for_function("document.querySelectorAll('.drawings li, .tabs').length > 0")
-    plan = next(a for a in annotations(server, "SPY") if a["type"] == "long_position")
+    page.mouse.click(box["x"] + 300, box["y"] + 300)
+    page.keyboard.press("Alt+KeyL")
+    page.mouse.click(box["x"] + box["width"] * 0.5, box["y"] + box["height"] * 0.45)
+    page.mouse.move(box["x"] + box["width"] * 0.6, box["y"] + box["height"] * 0.25)
+    page.mouse.click(box["x"] + box["width"] * 0.6, box["y"] + box["height"] * 0.25)
+    page.wait_for_function("__autobench.drawn() === 1")
+    plan = annotations(server, "SPY")[0]
     entry, stop, target = (p["price"] for p in plan["points"])
-    assert target > entry > stop
-    assert abs((target - entry) - 2 * (entry - stop)) < 0.01  # default 2R stop
+    assert target > entry > stop and abs((target - entry) - 2 * (entry - stop)) < 0.01  # default 2R stop
+    page.click(".draw-toolbar button[aria-label='Lock']")
+    page.wait_for_function("fetch('/api/annotations?symbol=SPY').then(r => r.json()).then(a => a[0].style.locked === true)")
 
-    page.click("button[aria-label='Text label']")
-    page.mouse.click(box["x"] + box["width"] * 0.3, box["y"] + box["height"] * 0.4)
+    page.click("button[aria-label='Text']")
+    page.mouse.click(box["x"] + box["width"] * 0.3, box["y"] + box["height"] * 0.35)
     page.fill(".text-prompt input", "breakout watch")
     page.keyboard.press("Enter")
-    page.wait_for_function("!document.querySelector('.text-prompt')")
-    texts = [a for a in annotations(server, "SPY") if a["type"] == "text"]
-    assert texts and texts[-1]["text"] == "breakout watch"
+    page.wait_for_function("__autobench.drawn() === 2")
+    assert any(a["text"] == "breakout watch" for a in annotations(server, "SPY"))
 
 
-def test_zoom_pan_and_interval_switch(page):
+def test_zoom_pan_interval_and_chart_type(page):
     box = chart_box(page)
     lo, hi = page.evaluate("__autobench.visibleRange()")
     page.mouse.move(box["x"] + box["width"] * 0.5, box["y"] + box["height"] * 0.5)
-    page.mouse.wheel(0, -400)  # zoom in
+    page.mouse.wheel(0, -400)
     page.wait_for_timeout(100)
     lo2, hi2 = page.evaluate("__autobench.visibleRange()")
     assert hi2 - lo2 < (hi - lo) * 0.8
@@ -202,53 +236,136 @@ def test_zoom_pan_and_interval_switch(page):
     page.mouse.move(box["x"] + box["width"] * 0.5 + 200, box["y"] + box["height"] * 0.5, steps=5)
     page.mouse.up()
     lo3, hi3 = page.evaluate("__autobench.visibleRange()")
-    assert lo3 < lo2 - 5 and abs((hi3 - lo3) - (hi2 - lo2)) < 0.5  # panned back in time, same zoom
-
-    page.click(".intervals button:text-is('1h')")
-    page.wait_for_function("document.querySelector('.legend').textContent.includes('1h')")
+    assert lo3 < lo2 - 5 and abs((hi3 - lo3) - (hi2 - lo2)) < 0.5
+    page.wait_for_selector(".to-latest:not([hidden])")  # scrolled away from the latest bar
+    page.keyboard.press("End")
+    page.wait_for_selector(".to-latest[hidden]", state="attached")
+    page.click(".tb.iv:text-is('1H')")
+    page.wait_for_function("document.querySelector('.legend-interval').textContent === '1H'")
     page.wait_for_function("__autobench.bars() > 100")
-    assert ":" in page.inner_text(".legend .ohlc")  # intraday timestamps
+    page.click("button[aria-label='Chart type']")
+    page.click(".menu-item:has-text('Heikin Ashi')")
+    page.wait_for_function("__autobench.chart.active().chartType() === 'heikin'")
+    page.click(".range-btn:text-is('log')")
+    page.wait_for_function("__autobench.chart.active().scale() === 'log'")
 
 
-def test_indicator_menu_adds_and_removes(page):
-    page.click(".menu > button")
-    page.fill(".menu-filter", "macd")
-    page.click(".menu-list li >> nth=0")
-    page.click(".ind-edit button:has-text('Add')")
-    page.wait_for_function("__autobench.panes() >= 2")
-    assert "macd" in page.inner_text(".legend")
-    page.click(".menu .chip button")
-    page.wait_for_function("__autobench.panes() === 1")
+def test_indicator_picker_settings_and_remove(page):
+    page.mouse.click(400, 400)
+    page.keyboard.press("/")
+    page.fill(".ind-dialog input", "macd")
+    page.click(".ind-item >> nth=0")
+    page.keyboard.press("Escape")
+    page.wait_for_function("__autobench.panes() === 3")
+    page.hover(".pane-legend:has-text('macd') .ind-name")
+    page.click("button[aria-label^='Settings for macd']")
+    page.fill(".dialog input >> nth=0", "8")  # fast length
+    page.click(".dialog button:has-text('Apply')")
+    page.wait_for_function("document.querySelector('.pane-legends').textContent.includes('macd(8')")
+    page.hover(".pane-legend:has-text('macd') .ind-name")
+    page.click("button[aria-label^='Remove macd']")
+    page.wait_for_function("__autobench.panes() === 2")
 
 
-def test_search_notes_and_watchlist(page, server):
-    page.fill(".search input", "AMD")
-    page.wait_for_selector(".search-results li")
+def test_symbol_search_by_typing_and_compare(page):
+    page.mouse.click(400, 400)
+    page.keyboard.type("AMD", delay=40)
+    page.wait_for_selector(".search-row")
     page.keyboard.press("Enter")
     page.wait_for_function("document.querySelector('.legend-symbol').textContent === 'AMD'")
-
-    page.click(".tabs button:has-text('Notes')")
-    page.fill(".note-form input", "Thesis")
-    page.fill(".note-form textarea", "**Bold** idea\n- point one")
-    page.click(".note-form button")
-    page.wait_for_selector(".card header:has-text('Thesis')")
-    page.click(".card header:has-text('Thesis')")
-    assert page.locator(".md b").inner_text() == "Bold"
-
-    page.click(".tabs button:has-text('Watchlist')")
-    page.fill("input[aria-label='Add tickers']", "MSFT, NVDA")
+    page.click("button[aria-label='Compare or add symbol']")
+    page.keyboard.type("MSFT", delay=40)
+    page.wait_for_selector(".search-row")
     page.keyboard.press("Enter")
-    page.wait_for_selector(".watch li:has-text('NVDA')")
-    page.click(".watch li:has-text('MSFT')")
+    page.wait_for_function("__autobench.chart.active().compares() === 1")
+    assert page.evaluate("__autobench.chart.active().scale()") == "percent"
+
+
+def test_watchlist_keyboard_and_multi_chart(page, server):
+    httpx.put(f"{server}/api/watchlists/default", json={"replace": ["###TECH", "AAPL", "MSFT", "NVDA"]})
+    page.reload()
+    page.wait_for_function("window.__autobench && __autobench.bars() > 0")
+    page.wait_for_selector(".wl-row[data-symbol='NVDA']")
+    assert page.inner_text(".wl-section").strip() == "TECH"
+    page.click(".wl-row[data-symbol='AAPL']")
+    page.wait_for_function("document.querySelector('.legend-symbol').textContent === 'AAPL'")
+    page.keyboard.press("ArrowDown")
     page.wait_for_function("document.querySelector('.legend-symbol').textContent === 'MSFT'")
+    page.wait_for_function("document.querySelector('.wl-row[data-symbol=\"MSFT\"] .wl-num').textContent !== '…'")
+    page.click("button[aria-label='Layout: charts and sync']")
+    page.click(".menu-item:has-text('4 charts')")
+    page.wait_for_function("__autobench.chart.count() === 4")
+    page.locator(".chart-cell").nth(3).click(position={"x": 200, "y": 150})
+    page.click(".wl-row[data-symbol='NVDA']")
+    page.wait_for_function("document.querySelectorAll('.legend-symbol')[3].textContent === 'NVDA'")
+    assert page.locator(".legend-symbol").nth(0).inner_text() == "MSFT"  # the other charts are unchanged
+
+
+def test_alert_from_context_menu_triggers_toast(page, server):
+    box = chart_box(page)
+    page.mouse.click(box["x"] + 300, box["y"] + 300, button="right")
+    page.click(".menu-item:has-text('Add alert at')")
+    page.fill(".dialog input[type=number]", "1")
+    page.select_option(".dialog select", "above")
+    page.click(".dialog button:has-text('Create')")
+    page.wait_for_function("fetch('/api/alerts').then(r => r.json()).then(a => a.length === 1)")
+    httpx.post(f"{server}/api/alerts/check")  # SPY is far above 1: fires now
+    page.wait_for_selector(".toast.alert")
+    assert "SPY" in page.inner_text(".toast.alert")
+    page.click("button[aria-label='Alerts']")
+    page.wait_for_selector(".alert-row.triggered")
+
+
+# ------------------------------------------------------------------------------- pages
+
+
+def test_screener_filters_sort_views(page):
+    page.click("a.page-tab[href='#screener']")
+    page.wait_for_selector(".data-table tbody tr")
+    page.wait_for_function("document.querySelectorAll('.data-table tbody tr').length === 10")  # the fake universe
+    page.fill(".scr-row input.mono", 'market_cap > 0 and sector == "Information Technology"')
+    page.keyboard.press("Enter")
+    page.wait_for_function("document.querySelectorAll('.data-table tbody tr').length === 4")
+    page.click(".data-table th:has-text('Price')")
+    page.wait_for_selector(".data-table th.sorted:has-text('Price')")
+    page.wait_for_timeout(300)
+    col = [h.strip() for h in page.locator(".data-table thead th").all_inner_texts()].index("Price") + 1
+    prices = [float(t.replace(",", "")) for t in page.locator(f".data-table tbody tr td:nth-child({col})").all_inner_texts()]
+    assert prices == sorted(prices, reverse=True)
+    page.click(".view-tabs .tab:text-is('Charts')")
+    page.wait_for_selector(".tile")
+    page.click(".tile >> nth=0")
+    page.wait_for_selector(".chart-page:not([hidden])")
+
+
+def test_heatmap_markets_calendar_pages(page):
+    page.click("a.page-tab[href='#heatmap']")
+    page.wait_for_function("""(() => { const c = document.querySelector('.hm-canvas'); if (!c || !c.width) return false;
+        const d = c.getContext('2d').getImageData(c.width / 2, c.height / 2, 1, 1).data; return d[1] > 40 || d[0] > 40; })()""")
+    box = page.locator(".hm-canvas").bounding_box()
+    page.mouse.move(box["x"] + box["width"] * 0.3, box["y"] + box["height"] * 0.5)
+    page.wait_for_selector(".hm-tip:not([hidden])")
+    page.click("a.page-tab[href='#markets']")
+    page.wait_for_selector(".mk-breadth .split")
+    page.wait_for_selector(".macro-card")
+    assert "Advancing" in page.inner_text(".mk-breadth")
+    page.click("a.page-tab[href='#calendar']")
+    page.wait_for_selector(".earn-item")
+    page.click(".seg-btn:text-is('Economic')")
+    page.wait_for_selector(".econ-table")
 
 
 def test_mobile_and_light_theme(browser, server):
+    _reset(server)
     pg = browser.new_page(viewport={"width": 390, "height": 844}, color_scheme="light")
-    pg.goto(server)
+    pg.goto(f"{server}/#chart")
     pg.wait_for_function("window.__autobench && __autobench.bars() > 0", timeout=20000)
     assert pg.evaluate("document.documentElement.scrollWidth") <= 390
     bg = pg.evaluate("""(() => { const c = document.querySelector('.chart canvas');
         return Array.from(c.getContext('2d').getImageData(c.width / 3, 5, 1, 1).data); })()""")
     assert min(bg[:3]) > 230  # light chart background
+    for tab in ("screener", "heatmap", "markets", "calendar"):
+        pg.click(f"a.page-tab[href='#{tab}']")
+        pg.wait_for_timeout(800)
+        assert pg.evaluate("document.documentElement.scrollWidth") <= 392, tab
     pg.close()

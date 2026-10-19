@@ -2,6 +2,7 @@
 // Run: dart run test/core_test.dart   (no test framework needed; exits non-zero on failure)
 import 'dart:io';
 
+import '../lib/src/core/chartmath.dart';
 import '../lib/src/core/format.dart';
 import '../lib/src/core/geometry.dart';
 import '../lib/src/core/json.dart';
@@ -10,6 +11,8 @@ import '../lib/src/core/markdown.dart';
 import '../lib/src/core/models.dart';
 import '../lib/src/core/ticks.dart';
 import '../lib/src/core/time.dart';
+import '../lib/src/core/treemap.dart';
+import '../lib/src/core/undo.dart';
 
 var _failures = 0, _passes = 0;
 String _group = '';
@@ -33,7 +36,9 @@ void check(String what, Object? actual, Object? expected) {
 
 int utc(int y, int m, int d, [int h = 0, int min = 0]) => DateTime.utc(y, m, d, h, min).millisecondsSinceEpoch ~/ 1000;
 
-void main() {
+final _pending = <Future<void>>[];
+
+Future<void> main() async {
   group('new york offset', () {
     // 2026: DST from Sun Mar 8 07:00 UTC to Sun Nov 1 06:00 UTC
     check('winter', nyOffsetSeconds(utc(2026, 1, 15, 15)), -5 * 3600);
@@ -135,6 +140,97 @@ void main() {
     check('ordered list', (parseMarkdown('1. a\n2. b').single as ListBlock).ordered, true);
   });
 
+  group('treemap', () {
+    const bounds = Rect(0, 0, 600, 400);
+    final weights = <double>[6, 6, 4, 3, 2, 2, 1, 0];
+    final rects = squarify(weights, bounds);
+    final total = weights.reduce((a, b) => a + b);
+    var areaOk = true, inside = true, worstAspect = 0.0;
+    for (var i = 0; i < weights.length; i++) {
+      final r = rects[i];
+      if ((r.area - weights[i] / total * bounds.area).abs() > 1e-6) areaOk = false;
+      if (r.x < -1e-9 || r.y < -1e-9 || r.x + r.w > 600 + 1e-6 || r.y + r.h > 400 + 1e-6) inside = false;
+      if (r.area > 0) worstAspect = [worstAspect, r.w / r.h, r.h / r.w].reduce((a, b) => a > b ? a : b);
+    }
+    check('areas proportional to weights', areaOk, true);
+    check('all rects inside bounds', inside, true);
+    check('reasonable aspect ratios', worstAspect < 4, true);
+    var overlap = false;
+    for (var i = 0; i < rects.length; i++) {
+      for (var j = i + 1; j < rects.length; j++) {
+        final a = rects[i], b = rects[j];
+        final ox = (a.x + a.w).clamp(0, 1e9) - (a.x > b.x ? a.x : b.x);
+        final w = (a.x + a.w < b.x + b.w ? a.x + a.w : b.x + b.w) - (a.x > b.x ? a.x : b.x);
+        final h = (a.y + a.h < b.y + b.h ? a.y + a.h : b.y + b.h) - (a.y > b.y ? a.y : b.y);
+        if (w > 1e-6 && h > 1e-6 && ox > 0) overlap = true;
+      }
+    }
+    check('no overlaps', overlap, false);
+    check('zero weight -> empty', rects.last.area, 0.0);
+    check('empty input', squarify([], bounds), []);
+  });
+
+  group('chart math', () {
+    final bars = [const Bar(0, 10, 12, 9, 11, 100), const Bar(1, 11, 13, 10, 12, 100)];
+    final ha = heikinAshi(bars);
+    check('HA close = ohlc4', ha[0].close, (10 + 12 + 9 + 11) / 4);
+    check('HA first open = (o+c)/2', ha[0].open, 10.5);
+    check('HA second open = prev (o+c)/2', ha[1].open, (ha[0].open + ha[0].close) / 2);
+    check('HA high ≥ open/close', ha[1].high >= ha[1].open && ha[1].high >= ha[1].close, true);
+    const log = PriceTransform(ScaleMode.log);
+    check('log round trip', log.from(log.to(123.4)), 123.4);
+    const pct = PriceTransform(ScaleMode.percent, 200);
+    check('percent', pct.to(220), 10.0);
+    check('percent inverse', pct.from(-50), 100.0);
+    final last = utc(2026, 10, 16);
+    check('YTD start', rangeStart('YTD', last), utc(2026, 1, 1));
+    check('1Y start', rangeStart('1Y', last), utc(2025, 10, 16));
+    check('All', rangeStart('All', last), null);
+    final b = [for (var i = 0; i < 5; i++) Bar(i * 10, 1, 1, 1, 1, 1)];
+    check('first index at/after', [firstIndexAtOrAfter(b, 15), firstIndexAtOrAfter(b, 20), firstIndexAtOrAfter(b, 99)], [2, 2, 5]);
+  });
+
+  group('market session', () {
+    check('open', marketSession(DateTime.utc(2026, 10, 16, 15)).state, 'open'); // 11:00 EDT Friday
+    check('pre', marketSession(DateTime.utc(2026, 10, 16, 12)).state, 'pre'); // 08:00 EDT
+    check('post', marketSession(DateTime.utc(2026, 10, 16, 21)).state, 'post'); // 17:00 EDT
+    check('weekend', marketSession(DateTime.utc(2026, 10, 17, 15)).state, 'closed');
+    check('holiday', marketSession(DateTime.utc(2026, 11, 26, 15)).label, 'Holiday'); // Thanksgiving
+    check('early close', marketSession(DateTime.utc(2026, 11, 27, 18, 30)).state, 'post'); // 13:30 EST
+    check('next change is the close', marketSession(DateTime.utc(2026, 10, 16, 15)).nextChange, utc(2026, 10, 16, 20));
+  });
+
+  group('colors & csv', () {
+    check('neutral', changeColor(0, 3), 'rgb(65,69,84)');
+    check('full green', changeColor(5, 3), 'rgb(48,204,90)');
+    check('full red', changeColor(-3, 3), 'rgb(246,53,56)');
+    check('null', changeColor(null, 3), '#3b4252');
+    check('csv quoting', toCsv(['a', 'b'], [[1, 'x,y'], [null, 'say "hi"']]), 'a,b\n1,"x,y"\n,"say ""hi"""');
+  });
+
+  group('undo stack', () {
+    final log = <String>[];
+    final u = UndoStack(limit: 2);
+    for (final n in ['a', 'b', 'c']) {
+      u.push(Command(n, undo: () async => log.add('undo $n'), redo: () async => log.add('redo $n')));
+    }
+    check('limit drops oldest', u.undoLabel, 'c');
+    Future<void> run() async {
+      await u.undo();
+      await u.undo();
+      check('stops at limit', await u.undo(), null);
+      await u.redo();
+      check('order', log, ['undo c', 'undo b', 'redo b']);
+      u.push(Command('d', undo: () async {}, redo: () async {}));
+      check('new op clears redo', u.canRedo, false);
+    }
+
+    _pending.add(run());
+  });
+
+  for (final f in _pending) {
+    await f;
+  }
   stdout.writeln('$_passes passed, $_failures failed');
   if (_failures > 0) exit(1);
 }

@@ -129,7 +129,7 @@ def test_workbench_endpoints(client):
     assert client.get("/api/screens").json()[0]["signal"] == "top_gainers"
     assert client.delete("/api/screens/mine").status_code == 200
     assert client.get("/api/snapshot/AAPL").json()["symbol"] == "AAPL"
-    assert client.get("/api/snapshot/ZZZZ").status_code == 404
+    assert client.get("/api/snapshot/ZZZZ").json()["in_universe"] is False
     hm = client.get("/api/heatmap", params={"universe": "all", "period": "1m"}).json()
     assert hm["metric"] == "perf_1m" and hm["sectors"]
     assert client.get("/api/breadth").json()["count"] == 10

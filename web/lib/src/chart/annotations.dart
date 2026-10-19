@@ -30,6 +30,9 @@ class AnnotationLayer {
   List<Annotation> annotations = const [];
   Draft? draft;
   String? selectedId, hoverId;
+  bool hidden = false;
+  /// Drawings being dragged: shown instead of the stored version until the edit is committed.
+  final Map<String, Annotation> previews = {};
   double _w = 10000;
 
   AnnotationLayer(this.chart) {
@@ -57,8 +60,14 @@ class AnnotationLayer {
 
   void _drawAll(CanvasRenderingContext2D ctx, double w, double h) {
     _w = w;
-    for (final a in annotations) {
-      if (a.visible) _drawOne(ctx, a, w, h, a.id == selectedId, a.id == hoverId);
+    if (!hidden) {
+      for (final stored in annotations) {
+        final a = previews[stored.id] ?? stored;
+        if (!a.visible) continue;
+        final sel = a.id == selectedId;
+        _drawOne(ctx, a, w, h, sel, a.id == hoverId);
+        if (sel) _handles(ctx, [for (final hd in handles(a)) hd.$2], _baseColor(a), locked: isLocked(a));
+      }
     }
     final d = draft;
     if (d != null && d.points.isNotEmpty) {
@@ -139,7 +148,6 @@ class AnnotationLayer {
           ctx.fill();
         }
         if (text.isNotEmpty) _label(ctx, badge + text, (p.x + q.x) / 2, (p.y + q.y) / 2 - 12, base, align: 'center');
-        if (selected) _handles(ctx, [p, q], base);
       case 'horizontal_line' || 'horizontal_ray':
         final yy = y(price(0));
         if (yy == null) break;
@@ -160,7 +168,6 @@ class AnnotationLayer {
         ctx.fillRect(l, t, w, h);
         ctx.strokeRect(l, t, w, h);
         if (text.isNotEmpty) _label(ctx, badge + text, l + 4, t + 12, base);
-        if (selected) _handles(ctx, [p, q], base);
       case 'parallel_channel':
         final p = at(0), q = at(1), r = at(2);
         if (p == null || q == null || r == null) break;
@@ -179,7 +186,6 @@ class AnnotationLayer {
         _dash(ctx, const [4, 4]);
         _line(ctx, XY(p.x, (p.y + p2.y) / 2), XY(q.x, (q.y + q2.y) / 2));
         if (text.isNotEmpty) _label(ctx, badge + text, q.x + 4, q.y, base);
-        if (selected) _handles(ctx, [p, q, r], base);
       case 'fib_retracement':
         final p = at(0), q = at(1);
         final p0 = price(0), p1 = price(1);
@@ -205,14 +211,13 @@ class AnnotationLayer {
         _dash(ctx, const [2, 3]);
         _line(ctx, p, q);
         if (text.isNotEmpty) _label(ctx, badge + text, left + 4, math.min(p.y, q.y) - 14, base);
-        if (selected) _handles(ctx, [p, q], base);
       case 'price_range':
         final p = at(0), q = at(1);
         final p0 = price(0), p1 = price(1);
         if (p == null || q == null || p0 == null || p1 == null) break;
         final d = p1 - p0;
         final pc = d / p0 * 100;
-        final col = d >= 0 ? upColor : downColor;
+        final col = d >= 0 ? chart.theme.up : chart.theme.down;
         ctx.fillStyle = hexAlpha(col, 0.12).toJS;
         ctx.fillRect(math.min(p.x, q.x), math.min(p.y, q.y), (q.x - p.x).abs(), (q.y - p.y).abs());
         ctx.strokeStyle = col.toJS;
@@ -230,7 +235,6 @@ class AnnotationLayer {
         }
         ctx.stroke();
         if (text.isNotEmpty) _label(ctx, badge + text, ok.last.x + 4, ok.last.y, base);
-        if (selected) _handles(ctx, ok, base);
       case 'text':
         final p = at(0);
         if (p == null) break;
@@ -289,22 +293,25 @@ class AnnotationLayer {
         ctx.lineWidth = 1;
         _line(ctx, XY(x1, e.y), XY(x2, e.y));
         String rel(double v) => pct((v - entry) / entry * 100);
-        _label(ctx, '${badge}Target ${fmtPrice(tgt)} (${rel(tgt)}) · ${rr.toStringAsFixed(2)}R', x1 + 4, t.y, upColor);
-        _label(ctx, 'Stop ${fmtPrice(stop)} (${rel(stop)})', x1 + 4, s.y, downColor);
+        _label(ctx, '${badge}Target ${fmtPrice(tgt)} (${rel(tgt)}) · ${rr.toStringAsFixed(2)}R', x1 + 4, t.y, chart.theme.up);
+        _label(ctx, 'Stop ${fmtPrice(stop)} (${rel(stop)})', x1 + 4, s.y, chart.theme.down);
         _label(ctx,
             '${a.type == 'long_position' ? 'Long' : 'Short'} ${fmtPrice(entry)}${text.isNotEmpty ? ' · $text' : ''}',
             x1 + 4, e.y, '#94a3b8');
-        if (selected) _handles(ctx, [e, XY(x2, s.y), XY(x2, t.y)], base);
     }
     ctx.restore();
   }
 
-  void _handles(CanvasRenderingContext2D ctx, List<XY> pts, String color) {
+  void _handles(CanvasRenderingContext2D ctx, List<XY> pts, String color, {bool locked = false}) {
     _dash(ctx, const []);
     for (final p in pts) {
       ctx.beginPath();
-      ctx.arc(p.x, p.y, 4, 0, math.pi * 2);
-      ctx.fillStyle = '#0f172a'.toJS;
+      if (locked) {
+        ctx.rect(p.x - 3, p.y - 3, 6, 6);
+      } else {
+        ctx.arc(p.x, p.y, 4.5, 0, math.pi * 2);
+      }
+      ctx.fillStyle = chart.theme.bg.toJS;
       ctx.fill();
       ctx.strokeStyle = color.toJS;
       ctx.lineWidth = 1.5;
@@ -312,10 +319,56 @@ class AnnotationLayer {
     }
   }
 
+  String _baseColor(Annotation a) => a.style['color'].s ?? (a.author == 'agent' ? agentColor : userColor);
+
+  bool isLocked(Annotation a) => a.style['locked'].b == true;
+
+  /// Editable points of a drawing: (index into points, pixel position). Horizontal lines expose a
+  /// single handle near the right edge; positions expose entry, stop and target.
+  List<(int, XY)> handles(Annotation a) {
+    final pts = [for (final p in a.points) pt(p)];
+    XY? at(int i) => i < pts.length ? pts[i] : null;
+    switch (a.type) {
+      case 'horizontal_line':
+        final yy = y(a.points.isEmpty ? null : a.points[0].price);
+        return yy == null ? const [] : [(0, XY(_w - 30, yy))];
+      case 'horizontal_ray':
+        final p = at(0);
+        return p == null ? const [] : [(0, p)];
+      case 'vertical_line':
+        final xx = x(a.points.isEmpty ? null : a.points[0].time);
+        return xx == null ? const [] : [(0, XY(xx, 24))];
+      case 'long_position' || 'short_position':
+        final e = at(0), s = at(1), t = at(2);
+        if (e == null || s == null || t == null) return const [];
+        final x2 = math.max(s.x, e.x + 30);
+        return [(0, e), (1, XY(x2, s.y)), (2, XY(x2, t.y))];
+      default:
+        return [for (var i = 0; i < pts.length; i++) if (pts[i] != null) (i, pts[i]!)];
+    }
+  }
+
+  /// The selected drawing's handle under (px, py): (annotation id, point index).
+  (String, int)? hitHandle(double px, double py, {double tol = 7}) {
+    final id = selectedId;
+    if (id == null || hidden) return null;
+    for (final a in annotations) {
+      if (a.id != id || !a.visible) continue;
+      for (final (i, p) in handles(previews[id] ?? a)) {
+        if ((p.x - px).abs() <= tol && (p.y - py).abs() <= tol) return (id, i);
+      }
+    }
+    return null;
+  }
+
+  /// Time for an x coordinate (interpolated/extrapolated, no snapping).
+  int? timeAtX(double px) => mapper.time(chart.xToLogical(px));
+
   // ---------------------------------------------------------------- hit testing
 
   /// Id of the topmost visible annotation within [tol] px of ([px], [py]).
   String? hit(double px, double py, {double tol = 6}) {
+    if (hidden) return null;
     final P = XY(px, py);
     final W = _w;
     for (final a in annotations.reversed) {

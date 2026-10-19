@@ -735,7 +735,8 @@ def scan_watchlist(name: str = "default", interval: IntervalArg = "1d",
                 "nearest_resistance": (t["levels"]["resistances"] or [{}])[0].get("price")}
 
     with ThreadPoolExecutor(max_workers=6) as pool:
-        futs = {s: pool.submit(one, s) for s in wl["symbols"]}
+        # entries starting with ### are section headers in the UI's watchlist
+        futs = {s: pool.submit(one, s) for s in wl["symbols"] if not s.startswith("###")}
         for s, fut in futs.items():
             try:
                 rows.append(fut.result())
@@ -778,7 +779,11 @@ def screen_stocks(
 def get_stock_snapshot(symbol: Symbol) -> Any:
     """Every screener field for one stock in one call (valuation, margins, growth, performance, technicals,
     52-week range, volume) – a FinViz-style quote table, handy for quick comparisons."""
-    return screener.snapshot(symbol)
+    snap = screener.snapshot(symbol)
+    if not snap.get("in_universe"):
+        raise KeyError(f"{snap['symbol']} is not in the stock universe (ETFs, indices and non-US listings are not); "
+                       "use get_fundamentals / get_technical_summary instead")
+    return snap
 
 
 @tool()

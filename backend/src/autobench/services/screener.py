@@ -170,9 +170,9 @@ VIEWS = {
 SIGNALS = {
     "top_gainers": ("Top Gainers", "change_pct > 0 and price >= 1 and avg_volume >= 100000", "-change_pct"),
     "top_losers": ("Top Losers", "change_pct < 0 and price >= 1 and avg_volume >= 100000", "change_pct"),
-    "new_high": ("New 52W High", "from_high_52w >= -0.01", "-change_pct"),
-    "new_low": ("New 52W Low", "from_low_52w <= 0.01", "change_pct"),
-    "most_active": ("Most Active", "volume > 0", "-volume"),
+    "new_high": ("New 52W High", "from_high_52w >= -0.01 and avg_volume >= 100000 and price >= 1", "-change_pct"),
+    "new_low": ("New 52W Low", "from_low_52w <= 0.01 and avg_volume >= 100000 and price >= 1", "change_pct"),
+    "most_active": ("Most Active", "volume > 0 and price >= 1", "-volume"),
     "most_volatile": ("Most Volatile", "avg_volume >= 100000", "-range_1w"),
     "unusual_volume": ("Unusual Volume", "rel_volume >= 2 and avg_volume >= 100000", "-rel_volume"),
     "overbought": ("Overbought", "rsi14 > 70 and avg_volume >= 100000", "-rsi14"),
@@ -188,7 +188,8 @@ SIGNALS = {
 def meta() -> dict:
     return {"fields": [asdict(f) for f in FIELDS], "views": VIEWS,
             "signals": {k: v[0] for k, v in SIGNALS.items()}, "screens": list_screens(),
-            "sectors": _distinct("sector"), "countries": _distinct("country"), "status": universe.status()}
+            "sectors": _distinct("sector"), "countries": _distinct("country"), "industries": _distinct("industry"),
+            "exchanges": _distinct("exchange"), "status": universe.status()}
 
 
 def _distinct(col: str) -> list[str]:
@@ -390,9 +391,10 @@ def snapshot(symbol: str) -> dict:
     df = universe.table()
     sym = symbol.upper()
     if df.empty or sym not in df.index:
-        raise KeyError(f"{sym} is not in the screener universe (yet)")
+        # ETFs, indices, futures etc. are not in the stock universe: not an error for the UI
+        return {"symbol": sym, "in_universe": False}
     r = df.loc[sym]
-    out = {"symbol": sym}
+    out = {"symbol": sym, "in_universe": True}
     for f in FIELDS:
         if f.key != "symbol":
             out[f.key] = _clean(r.get(f.key))

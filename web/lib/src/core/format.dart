@@ -20,10 +20,14 @@ String fmtPrice(num p) {
 String n(num? v, [int digits = 2]) => v == null || !v.isFinite ? '–' : v.toStringAsFixed(digits);
 
 /// Signed percentage: "+1.23%".
-String pct(num? v) => v == null ? '–' : '${v >= 0 ? '+' : ''}${v.toStringAsFixed(2)}%';
+String pct(num? v) => v == null ? '–' : '${signed(v)}%';
 
-/// Signed number: "+1.23".
-String signed(num v, [int digits = 2]) => '${v >= 0 ? '+' : ''}${v.toStringAsFixed(digits)}';
+/// Signed number: "+1.23". Values that round to zero print as "0.00" (no "-0.00").
+String signed(num v, [int digits = 2]) {
+  final s = v.toStringAsFixed(digits);
+  if (double.parse(s) == 0) return (0).toStringAsFixed(digits);
+  return '${v > 0 ? '+' : ''}$s';
+}
 
 /// Compact notation: 1.25K, 3.4M, 2.1B, 1.05T.
 String compact(num? v, {int maxDigits = 2}) {

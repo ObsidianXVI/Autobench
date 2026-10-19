@@ -100,3 +100,9 @@ extension Hidden on HTMLElement {
   bool get isHidden => hasAttribute('hidden');
   set isHidden(bool v) => v ? setAttribute('hidden', '') : removeAttribute('hidden');
 }
+
+/// querySelectorAll as a Dart list.
+List<HTMLElement> qsa(Element root, String selector) {
+  final nodes = root.querySelectorAll(selector);
+  return [for (var i = 0; i < nodes.length; i++) nodes.item(i)! as HTMLElement];
+}

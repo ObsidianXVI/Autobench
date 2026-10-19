@@ -46,6 +46,15 @@ Future<J> request(String path, {String method = 'GET', Object? body}) async {
   return J(data);
 }
 
+/// Resolves to null instead of throwing (for optional data where a failure just means "none").
+Future<T?> attempt<T>(Future<T> f) async {
+  try {
+    return await f;
+  } catch (_) {
+    return null;
+  }
+}
+
 class Api {
   Future<J> health() => request('/api/health');
 
@@ -78,16 +87,32 @@ class Api {
   Future<J> summary(String symbol, {String interval = '1d'}) =>
       request('/api/summary/${_enc(symbol)}${_q({'interval': interval})}');
   Future<J> fundamentals(String symbol) => request('/api/fundamentals/${_enc(symbol)}');
-  Future<J> news(String symbol) => request('/api/news${_q({'symbol': symbol, 'limit': 12})}');
+  Future<J> news(String? symbol, {int limit = 12}) => request('/api/news${_q({'symbol': symbol, 'limit': limit})}');
+  Future<J> earnings(String symbol) => request('/api/earnings/${_enc(symbol)}');
+  Future<J> snapshot(String symbol) => request('/api/snapshot/${_enc(symbol)}');
+  Future<Map<String, Quote>> quotes(List<String> symbols) async {
+    if (symbols.isEmpty) return {};
+    final r = await request('/api/quotes${_q({'symbols': symbols.join(',')})}');
+    return {for (final e in r.map.entries) e.key: Quote.fromJson(e.value)};
+  }
+
+  Future<List<Bar>> barsRange(String symbol, String interval, String lookback) async {
+    final r = await request('/api/bars/${_enc(symbol)}${_q({'interval': interval, 'lookback': lookback})}');
+    return [for (final b in r['bars'].list) Bar.fromJson(b)];
+  }
 
   Future<List<Annotation>> annotations(String symbol) async =>
       [for (final a in (await request('/api/annotations${_q({'symbol': symbol})}')).list) Annotation.fromJson(a)];
 
-  Future<Annotation> createAnnotation(String symbol, String type, List<Point> points, {String? text}) async =>
+  Future<Annotation> createAnnotation(String symbol, String type, List<Point> points,
+          {String? text, Map<String, Object?>? style, String? interval, String? tag}) async =>
       Annotation.fromJson(await request('/api/annotations/${_enc(symbol)}', method: 'POST', body: {
         'type': type,
         'points': [for (final p in points) p.toJson()],
         'text': ?text,
+        'style': ?style,
+        'interval': ?interval,
+        'tag': ?tag,
       }));
 
   Future<Annotation> updateAnnotation(String id, Map<String, Object?> patch) async =>
