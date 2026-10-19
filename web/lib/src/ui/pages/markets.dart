@@ -29,8 +29,10 @@ class MarketsPage {
   final HTMLElement _macro = h('section.mk-card.mk-macro');
   final HTMLElement _side = h('div.mk-side');
   J? _markets, _breadthData, _macroData;
-  String _sectorPeriod = '1d';
-  String _boardGroup = 'Futures';
+  String get _sectorPeriod => store.pref<String>('markets.sectorPeriod');
+  set _sectorPeriod(String v) => store.setPref('markets.sectorPeriod', v);
+  String get _boardGroup => store.pref<String>('markets.boardGroup');
+  set _boardGroup(String v) => store.setPref('markets.boardGroup', v);
   bool _loaded = false;
   Timer? _poll;
 

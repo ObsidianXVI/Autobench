@@ -31,6 +31,8 @@ class AnnotationLayer {
   Draft? draft;
   String? selectedId, hoverId;
   bool hidden = false;
+  /// Layers whose drawings cannot be dragged (null/'' = the main layer).
+  Set<String> lockedLayers = const {};
   /// Drawings being dragged: shown instead of the stored version until the edit is committed.
   final Map<String, Annotation> previews = {};
   double _w = 10000;
@@ -321,7 +323,8 @@ class AnnotationLayer {
 
   String _baseColor(Annotation a) => a.style['color'].s ?? (a.author == 'agent' ? agentColor : userColor);
 
-  bool isLocked(Annotation a) => a.style['locked'].b == true;
+  bool isLocked(Annotation a) =>
+      a.style['locked'].b == true || lockedLayers.contains((a.layer == null || a.layer!.isEmpty) ? 'main' : a.layer);
 
   /// Editable points of a drawing: (index into points, pixel position). Horizontal lines expose a
   /// single handle near the right edge; positions expose entry, stop and target.

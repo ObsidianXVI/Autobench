@@ -14,7 +14,8 @@ class AlertsPanel {
   final HTMLElement root = h('div.panel');
   final HTMLElement _body = h('div.panel-scroll');
   final Scope _scope = Scope();
-  String _filter = 'all';
+  String get _filter => store.pref<String>('alerts.filter');
+  set _filter(String v) => store.setPref('alerts.filter', v);
   final void Function(String symbol) onCreate;
 
   AlertsPanel({required this.onCreate}) {

@@ -10,6 +10,7 @@ import '../kit/state.dart';
 import '../store.dart';
 import 'agent.dart';
 import 'alerts.dart';
+import 'layers.dart';
 import 'news.dart';
 import 'watchlist.dart';
 
@@ -36,7 +37,7 @@ class Dock {
       _PanelDef('news', 'News', 'news', () => NewsPanel()),
       _PanelDef('agent', 'Agent activity & analyses', 'bot', () => AgentPanel()),
       _PanelDef('notes', 'Notes', 'note', () => NotesPanel()),
-      _PanelDef('objects', 'Object tree (drawings)', 'layers', () => ObjectsPanel()),
+      _PanelDef('layers', 'Layers & objects', 'layers', () => LayersPanel()),
     ];
     append(root, [_resizer, _host, _rail]);
     _scope.listen(store.panel, (_) => _render());
@@ -54,11 +55,13 @@ class Dock {
         NewsPanel p => p.root,
         AgentPanel p => p.root,
         NotesPanel p => p.root,
-        ObjectsPanel p => p.root,
+        LayersPanel p => p.root,
         _ => h('div'),
       };
 
   void _render() {
+    // the drawings list ("objects") became the Layers panel
+    if (store.panel.value == 'objects') store.panel.value = 'layers';
     final key = store.panel.value;
     root.classList.toggle('collapsed', key == null);
     if (key != null) {

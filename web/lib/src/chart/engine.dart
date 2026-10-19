@@ -21,7 +21,7 @@ import '../core/time.dart';
 
 const _font = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
 
-enum SeriesKind { line, dots, histogram }
+enum SeriesKind { line, dots, histogram, volume, area, candles }
 
 enum ChartType { candles, hollow, bars, line, area, heikin }
 
@@ -39,6 +39,7 @@ class Series {
   final bool dashed;
   final bool lastValueLabel;
   final List<double> levels; // dotted reference lines (e.g. RSI 30/70)
+  final List<Bar?>? ohlc; // for candles (another symbol's bars aligned to ours)
   bool visible;
   Series({
     this.id = '',
@@ -50,6 +51,7 @@ class Series {
     this.dashed = false,
     this.lastValueLabel = false,
     this.levels = const [],
+    this.ohlc,
     this.visible = true,
   });
 
@@ -130,8 +132,11 @@ class ChartEngine {
   List<EventMarker> markers = [];
   ChartType chartType = ChartType.candles;
   ScaleMode scaleMode = ScaleMode.linear;
-  bool showVolume = true;
+  bool showVolume = true; // volume overlaid at the bottom of the main pane
+  bool showPrice = true;
+  bool showLastPriceLine = true;
   bool showGrid = true;
+  String? upColorOverride, downColorOverride;
   String? lastLabelExtra; // e.g. bar countdown, shown under the last price
   int paneCount = 1;
   final List<_Pane> _panes = [_Pane()];
@@ -337,6 +342,8 @@ class ChartEngine {
       ..up = v('--up', theme.up)
       ..down = v('--down', theme.down)
       ..line = v('--accent', theme.line);
+    if (upColorOverride != null) theme.up = upColorOverride!;
+    if (downColorOverride != null) theme.down = downColorOverride!;
     theme
       ..volUp = _alpha(theme.up, 0.32)
       ..volDown = _alpha(theme.down, 0.32);
@@ -444,7 +451,7 @@ class ChartEngine {
       if (t > hi) hi = t;
     }
 
-    if (pane == 0) {
+    if (pane == 0 && showPrice) {
       final lineOnly = chartType == ChartType.line || chartType == ChartType.area;
       for (var i = from; i <= to; i++) {
         if (lineOnly) {
@@ -467,11 +474,25 @@ class ChartEngine {
     }
     for (final s in series) {
       if (s.pane != pane || !s.visible) continue;
-      for (var i = from; i <= to && i < s.values.length; i++) {
-        take(s.values[i]);
+      if (s.kind == SeriesKind.candles && s.ohlc != null) {
+        for (var i = from; i <= to && i < s.ohlc!.length; i++) {
+          take(s.ohlc![i]?.low);
+          take(s.ohlc![i]?.high);
+        }
+      } else {
+        for (var i = from; i <= to && i < s.values.length; i++) {
+          take(s.values[i]);
+        }
       }
-      if (s.kind == SeriesKind.histogram) take(0);
+      if (s.kind == SeriesKind.histogram || s.kind == SeriesKind.volume) take(0);
       if (pane > 0) s.levels.forEach(take);
+    }
+    if (pane == 0 && !lo.isFinite) {
+      // price hidden and nothing else in the main pane: keep the price scale so drawings stay put
+      for (var i = from; i <= to; i++) {
+        take(bars[i].low);
+        take(bars[i].high);
+      }
     }
     if (!lo.isFinite) {
       lo = 0;
@@ -600,7 +621,7 @@ class ChartEngine {
 
     if (index == 0) {
       if (showVolume) _drawVolume(ctx, from, to);
-      _drawPrice(ctx, from, to);
+      if (showPrice) _drawPrice(ctx, from, to);
       _drawCompares(ctx, from, to);
     }
     for (final s in series) {
@@ -622,19 +643,27 @@ class ChartEngine {
           _drawLine(ctx, s.values, s.color, s.width, s.dashed, p, from, to);
         case SeriesKind.dots:
           _drawDots(ctx, s, p, from, to);
+        case SeriesKind.volume:
+          _drawVolumeSeries(ctx, s, p, from, to);
+        case SeriesKind.area:
+          _drawAreaSeries(ctx, s, p, from, to);
+        case SeriesKind.candles:
+          _drawCandleSeries(ctx, s, p, from, to);
       }
     }
     if (index == 0) {
       final last = bars.last;
       final up = _n < 2 || last.close >= bars[_n - 2].close;
-      ctx.strokeStyle = (up ? theme.up : theme.down).toJS;
-      ctx.lineWidth = 1;
-      _dash(ctx, const [1, 3]);
-      final y = _crisp(p.y(last.close));
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(w, y);
-      ctx.stroke();
+      if (showPrice && showLastPriceLine) {
+        ctx.strokeStyle = (up ? theme.up : theme.down).toJS;
+        ctx.lineWidth = 1;
+        _dash(ctx, const [1, 3]);
+        final y = _crisp(p.y(last.close));
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+      }
       for (final pl in priceLines) {
         final py = p.y(pl.price);
         if (!py.isFinite) continue;
@@ -847,6 +876,70 @@ class ChartEngine {
     }
   }
 
+  void _drawVolumeSeries(CanvasRenderingContext2D ctx, Series s, _Pane p, int from, int to) {
+    final base = p.y(0);
+    final w = math.max(1.0, (spacing * 0.8).floorToDouble());
+    for (final up in [true, false]) {
+      ctx.fillStyle = (up ? _alpha(theme.up, 0.55) : _alpha(theme.down, 0.55)).toJS;
+      ctx.beginPath();
+      for (var i = from; i <= to && i < s.values.length && i < rawBars.length; i++) {
+        final v = s.values[i];
+        final b = rawBars[i];
+        if (v == null || (b.close >= b.open) != up) continue;
+        final x = logicalToX(i.toDouble()).roundToDouble();
+        final y = p.y(v);
+        ctx.rect(x - (w / 2).floorToDouble(), y, w, math.max(1, base - y));
+      }
+      ctx.fill();
+    }
+  }
+
+  void _drawAreaSeries(CanvasRenderingContext2D ctx, Series s, _Pane p, int from, int to) {
+    final lo = math.max(0, from - 1), hi = math.min(s.values.length - 1, to + 1);
+    final grad = ctx.createLinearGradient(0, p.top, 0, p.top + p.height);
+    grad.addColorStop(0, _alpha(s.color, 0.3));
+    grad.addColorStop(1, _alpha(s.color, 0.02));
+    ctx.beginPath();
+    double? firstX, lastX;
+    for (var i = lo; i <= hi; i++) {
+      final v = s.values[i];
+      if (v == null) continue;
+      final x = logicalToX(i.toDouble()), y = p.y(v);
+      if (firstX == null) {
+        ctx.moveTo(x, p.top + p.height);
+        firstX = x;
+      }
+      ctx.lineTo(x, y);
+      lastX = x;
+    }
+    if (firstX != null && lastX != null) {
+      ctx.lineTo(lastX, p.top + p.height);
+      ctx.closePath();
+      ctx.fillStyle = grad;
+      ctx.fill();
+    }
+    _drawLine(ctx, s.values, s.color, s.width, false, p, from, to);
+  }
+
+  void _drawCandleSeries(CanvasRenderingContext2D ctx, Series s, _Pane p, int from, int to) {
+    final data = s.ohlc;
+    if (data == null) return;
+    final body = math.max(1.0, (spacing * 0.72).floorToDouble());
+    for (final up in [true, false]) {
+      ctx.fillStyle = (up ? theme.up : theme.down).toJS;
+      ctx.beginPath();
+      for (var i = from; i <= to && i < data.length; i++) {
+        final b = data[i];
+        if (b == null || (b.close >= b.open) != up) continue;
+        final x = logicalToX(i.toDouble()).roundToDouble();
+        final yh = p.y(b.high), yl = p.y(b.low), yo = p.y(b.open), yc = p.y(b.close);
+        ctx.rect(x - 0.5, yh, 1, math.max(1, yl - yh));
+        if (body > 2) ctx.rect(x - (body / 2).floorToDouble(), math.min(yo, yc), body, math.max(1, (yo - yc).abs()));
+      }
+      ctx.fill();
+    }
+  }
+
   void _drawMarkers(CanvasRenderingContext2D ctx, _Pane p) {
     if (markers.isEmpty || _n == 0) return;
     final y = p.top + p.height - 11;
@@ -939,16 +1032,18 @@ class ChartEngine {
     }
     for (final s in series) {
       if (s.pane == 0 || !s.lastValueLabel || !s.visible) continue;
-      final v = s.lastValue();
+      final v = s.kind == SeriesKind.candles ? s.ohlc?.lastWhere((b) => b != null, orElse: () => null)?.close : s.lastValue();
       if (v == null) continue;
       final p = _panes[s.pane];
       final y = p.y(v);
       if (y >= p.top && y <= p.top + p.height) _axisLabel(ctx, axisPrice(v, p.step), y, s.color, '#0b1220');
     }
-    final last = bars.last;
-    final up = _n < 2 || last.close >= bars[_n - 2].close;
-    _axisLabel(ctx, _priceText(main, last.close), main.y(last.close), up ? theme.up : theme.down, '#fff',
-        second: lastLabelExtra);
+    if (showPrice) {
+      final last = bars.last;
+      final up = _n < 2 || last.close >= bars[_n - 2].close;
+      _axisLabel(ctx, _priceText(main, last.close), main.y(last.close), up ? theme.up : theme.down, '#fff',
+          second: lastLabelExtra);
+    }
   }
 
   void _drawTimeAxis(CanvasRenderingContext2D ctx, List<TimeTick> ticks) {

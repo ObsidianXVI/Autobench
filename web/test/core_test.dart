@@ -6,6 +6,7 @@ import '../lib/src/core/chartmath.dart';
 import '../lib/src/core/format.dart';
 import '../lib/src/core/geometry.dart';
 import '../lib/src/core/json.dart';
+import '../lib/src/core/layers.dart';
 import '../lib/src/core/mapper.dart';
 import '../lib/src/core/markdown.dart';
 import '../lib/src/core/models.dart';
@@ -226,6 +227,75 @@ Future<void> main() async {
     }
 
     _pending.add(run());
+  });
+
+  group('layers', () {
+    final c = SymbolConfig.builtin();
+    check('builtin items', c.layers.single.items.map((i) => i.id).toList(), ['price', 'volume', 'sma50', 'sma200', 'rsi']);
+    final round = SymbolConfig.fromJson(J(c.toJson()));
+    check('json round trip', round.toJson().toString(), c.toJson().toString());
+    final overlay = {'sma', 'ema', 'bbands'};
+    bool isOv(String n) => overlay.contains(n);
+    check('auto panes', assignPanes(c.shown, isOv), {'price': 0, 'volume': 0, 'sma50': 0, 'sma200': 0, 'rsi': 1});
+
+    final l2 = c.addLayer('Momentum');
+    check('new layer on top and active', [c.layers.first.id == l2.id, c.activeLayer == l2.id], [true, true]);
+    c.addItem(LayerItem.indicator('macd', 'macd'));
+    c.addItem(LayerItem.compare('cmp', 'QQQ', pane: 'new', display: 'candles'));
+    c.addItem(LayerItem.indicator('sig', 'sma', {'length': 9})..pane = 'with:macd');
+    final panes = assignPanes(c.shown, isOv);
+    // bottom layer first: rsi gets pane 1, then the top layer's macd 2 and QQQ 3; the SMA joins macd
+    check('panes across layers', [panes['rsi'], panes['macd'], panes['cmp'], panes['sig']], [1, 2, 3, 2]);
+    c.find('volume')!.$2.pane = 'new';
+    check('volume in its own pane', assignPanes(c.shown, isOv)['volume'], 1);
+    c.find('volume')!.$2.pane = 'auto';
+
+    l2.visible = false;
+    check('hidden layer drops its items', c.shown.map((i) => i.id).toList(), ['price', 'volume', 'sma50', 'sma200', 'rsi']);
+    check('attached item falls back to own pane when target hidden', assignPanes([
+      ...c.shown, c.find('sig')!.$2,
+    ], isOv)['sig'], 2);
+    l2.visible = true;
+
+    check('price cannot be removed', c.removeItem('price'), false);
+    c.find('price')!.$2.visible = false;
+    check('price can be hidden', c.shown.any((i) => i.kind == ItemKind.price), false);
+    c.find('price')!.$2.visible = true;
+    check('removing a target re-homes attached items', [c.removeItem('macd'), c.find('sig')!.$2.pane], [true, 'auto']);
+
+    c.moveItem('rsi', l2.id, index: 0);
+    check('move item between layers', [c.find('rsi')!.$1.id == l2.id, l2.items.first.id], [true, 'rsi']);
+    c.moveLayer(l2.id, 1);
+    check('reorder layers', c.layers.map((l) => l.id).toList(), [mainLayerId, l2.id]);
+    c.placeLayerBefore(l2.id, mainLayerId);
+    check('drag layer above another', c.layers.first.id, l2.id);
+
+    c.moveItem('price', l2.id);
+    check('remove layer keeps the price chart', [c.removeLayer(l2.id), c.price.id, c.layers.length], [true, 'price', 1]);
+    check('cannot remove the last layer', c.removeLayer(c.layers.single.id), false);
+
+    final d = c.duplicateLayer(mainLayerId);
+    check('duplicate copies items with new ids, never the price', [
+      d.items.any((i) => i.kind == ItemKind.price), d.items.every((i) => c.find(i.id)!.$1 == d), d.items.length,
+    ], [false, true, c.layer(mainLayerId)!.items.length - 1]);
+
+    final legacy = SymbolConfig.fromLegacy(indicators: [const IndicatorRef('ema', {'length': 21})], chartType: 'line',
+        scale: 'log', compares: ['SPY']);
+    check('legacy migration', [legacy.price.chartType, legacy.scale, legacy.all.map((i) => i.kind.name).toList()],
+        ['line', 'log', ['price', 'volume', 'indicator', 'compare']]);
+
+    final broken = SymbolConfig.fromJson(J({'layers': [], 'activeLayer': 'gone'}));
+    check('normalize repairs', [broken.layers.length, broken.price.kind, broken.activeLayer], [1, ItemKind.price, mainLayerId]);
+    final dupes = SymbolConfig.fromJson(J({'layers': [
+      {'id': 'a', 'items': [{'id': 'p1', 'kind': 'price'}, {'id': 'x', 'kind': 'indicator', 'name': 'rsi'}]},
+      {'id': 'b', 'items': [{'id': 'p2', 'kind': 'price'}, {'id': 'x', 'kind': 'indicator', 'name': 'rsi'}]},
+    ]}));
+    check('one price, unique ids', [dupes.all.where((i) => i.kind == ItemKind.price).length, dupes.all.length], [1, 2]);
+
+    final withDrawings = SymbolConfig.builtin();
+    check('drawing layers are created', [withDrawings.ensureDrawingLayers([null, 'agent', 'ideas']),
+      withDrawings.layers.map((l) => l.name).toList()], [true, ['ideas', 'Agent', 'Main']]);
+    check('unknown drawing layer falls back to main', withDrawings.layerOfDrawing('nope', 'user').id, mainLayerId);
   });
 
   for (final f in _pending) {

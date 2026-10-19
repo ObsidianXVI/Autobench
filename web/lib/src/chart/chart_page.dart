@@ -7,6 +7,7 @@ import 'dart:js_interop_unsafe';
 import 'package:web/web.dart';
 
 import '../core/chartmath.dart';
+import '../core/layers.dart';
 import '../core/json.dart';
 import '../core/models.dart';
 import '../core/time.dart';
@@ -71,7 +72,10 @@ class ChartPage {
   final HTMLElement dockSlot;
   final List<ChartPanel> panels = [];
   final Scope _scope = Scope();
-  final Map<String, String> _groupTool = {for (final e in toolGroups.entries) e.key: e.value.first.tool};
+  String _groupTool(String key) {
+    final saved = store.pref<Map<String, Object?>>('draw.groups')[key];
+    return saved is String && toolDef(saved) != null ? saved : toolGroups[key]!.first.tool;
+  }
   Timer? _clock;
   final Scope _chartScope = Scope();
 
@@ -84,6 +88,12 @@ class ChartPage {
     _scope.listen(store.grid, (_) => _buildGrid());
     _scope.listen(store.layoutVersion, (_) => _buildGrid());
     _scope.listen(store.active, (_) => _onActiveChanged());
+    _scope.listen(store.configVersion, (_) {
+      if (store.lastConfigChanged == chart.symbol.value) {
+        _renderToolbar();
+        _renderBottom();
+      }
+    });
     _scope.listen(store.tool, (_) => _renderDrawTools());
     _scope.listen(store.magnet, (_) => _renderDrawTools());
     _scope.listen(store.stayInDrawMode, (_) => _renderDrawTools());
@@ -168,28 +178,47 @@ class ChartPage {
       h('button.tb${on ? '.on' : ''}${cls.isEmpty ? '' : '.$cls'}', content,
           {'type': 'button', 'data-tip': tip, 'aria-label': tip}, {'click': onClick});
 
+  SymbolConfig? get _cfg => store.configNow(chart.symbol.value);
+
+  void _editCfg(void Function(SymbolConfig) change, String label) => store.editConfig(chart.symbol.value, change, label: label);
+
   void _renderToolbar() {
     final c = chart;
     final iv = c.interval.value;
-    final ct = c.chartType.value;
+    final cfg = _cfg;
+    final ct = cfg?.price.chartType ?? 'candles';
+    final favorites = store.prefList('chart.favoriteIntervals');
     final ctIcon = ct == 'candles' ? 'candles' : ct == 'heikin' ? 'heikin' : ct;
     replace(_toolbar, [
       _tbButton([icon('search', size: 15), h('b', c.symbol.value)], 'Symbol search (or just start typing)',
           (_) => _symbolSearch(), cls: 'symbol-btn'),
       _tbButton(icon('plus', size: 16), 'Compare or add symbol', (_) => _compare()),
       h('span.tb-sep'),
-      for (final f in favoriteIntervals)
+      for (final f in intervals.where(favorites.contains))
         _tbButton(intervalLabel(f), 'Interval $f', (_) => c.interval.value = f, on: f == iv, cls: 'iv'),
-      _tbButton(icon('chev-down', size: 14), 'More intervals (or type a number)', (e) {
+      if (!favorites.contains(iv)) _tbButton(intervalLabel(iv), 'Interval $iv', (_) {}, on: true, cls: 'iv'),
+      _tbButton(icon('chev-down', size: 14), 'More intervals (or type a number); ★ toggles the toolbar', (e) {
         showMenu([
-          for (final x in intervals) MenuItem(intervalLabel(x), checked: x == iv, onSelect: () => c.interval.value = x),
+          for (final x in intervals)
+            MenuItem(intervalLabel(x), checked: x == iv, hint: favorites.contains(x) ? '★' : '☆',
+                onSelect: () => c.interval.value = x),
+          const MenuItem.divider(),
+          MenuItem('Toolbar intervals', iconName: 'star', submenu: [
+            for (final x in intervals)
+              MenuItem(intervalLabel(x), checked: favorites.contains(x), onSelect: () {
+                final next = favorites.contains(x) ? (favorites.toList()..remove(x)) : [...favorites, x];
+                store.setPref('chart.favoriteIntervals', next);
+                _renderToolbar();
+              }),
+          ]),
         ], anchor: e.currentTarget as Element);
       }, cls: 'narrow'),
       h('span.tb-sep'),
       _tbButton(icon(ctIcon, size: 18), 'Chart type', (e) {
         showMenu([
           for (final (k, label) in chartTypes)
-            MenuItem(label, iconName: k == 'heikin' ? 'heikin' : k, checked: k == ct, onSelect: () => c.chartType.value = k),
+            MenuItem(label, iconName: k == 'heikin' ? 'heikin' : k, checked: k == ct,
+                onSelect: () => _editCfg((cfg) => cfg.price.chartType = k, 'Chart type')),
         ], anchor: e.currentTarget as Element);
       }),
       _tbButton([icon('fx', size: 17), h('span', 'Indicators')], 'Indicators (/)', (_) => _indicators(), cls: 'wide'),
@@ -204,6 +233,7 @@ class ChartPage {
       h('span.spacer'),
       _tbButton([icon('folder', size: 16), h('span', store.layoutName.value ?? 'Unsaved layout'), icon('chev-down', size: 13)],
           'Save / load layouts', (e) => _layoutMenu(e.currentTarget as Element), cls: 'wide'),
+      _tbButton(icon('settings', size: 17), 'Chart settings', (_) => showChartSettings()),
       _tbButton(icon('camera', size: 17), 'Screenshot', (_) => activePanel?.screenshot()),
       _tbButton(icon('fullscreen', size: 17), 'Fullscreen', (_) => _fullscreen()),
     ]);
@@ -212,15 +242,24 @@ class ChartPage {
   void _symbolSearch([String initial = '']) =>
       openSymbolSearch(initial: initial, onPick: (s) => chart.symbol.value = s);
 
-  void _compare() => openSymbolSearch(title: 'Compare symbol', onPick: (s) {
-        final list = chart.compares.value;
-        if (s == chart.symbol.value || list.contains(s)) return;
-        chart.compares.value = [...list, s];
-        if (chart.scale.value == 'linear') chart.scale.value = 'percent';
+  /// Adds another symbol to the active layer: compared on the price pane, or as its own chart.
+  void _compare() => openSymbolSearch(title: 'Add symbol to the active layer', onPick: (s) {
+        final cfg = _cfg;
+        if (cfg == null || s == chart.symbol.value) return;
+        if (cfg.all.any((i) => i.kind == ItemKind.compare && i.symbol == s)) return;
+        _editCfg((c) {
+          c.addItem(LayerItem.compare(newId('c'), s));
+          if (c.scale == 'linear') c.scale = 'percent';
+        }, 'Add $s');
       });
 
-  void _indicators() => openIndicatorPicker(
-      current: chart.indicators.value, onAdd: (r) => chart.indicators.value = [...chart.indicators.value, r]);
+  void _indicators() {
+    final cfg = _cfg;
+    if (cfg == null) return;
+    openIndicatorPicker(
+        current: [for (final (_, r) in cfg.indicatorItems) r],
+        onAdd: (r) => _editCfg((c) => c.addItem(LayerItem.indicator(newId('i'), r.name, Map.of(r.params))), 'Add ${r.name}'));
+  }
 
   void _gridMenu(Element anchor) {
     final g = store.grid.value;
@@ -344,7 +383,7 @@ class ChartPage {
   }
 
   HTMLElement _group(String key, List<ToolDef> tools, String active) {
-    final current = tools.firstWhere((t) => t.tool == active, orElse: () => toolDef(_groupTool[key]!)!);
+    final current = tools.firstWhere((t) => t.tool == active, orElse: () => toolDef(_groupTool(key))!);
     final on = tools.any((t) => t.tool == active);
     final tip = '${current.label}${current.shortcut != null ? ' (${current.shortcut})' : ''}';
     return h('div.dt-group', [
@@ -358,7 +397,7 @@ class ChartPage {
             showMenu([
               for (final t in tools)
                 MenuItem(t.label, iconName: t.iconName, shortcut: t.shortcut, checked: t.tool == active, onSelect: () {
-                  _groupTool[key] = t.tool;
+                  store.setPref('draw.groups', {...store.pref<Map<String, Object?>>('draw.groups'), key: t.tool});
                   store.tool.value = t.tool;
                 }),
             ], anchor: (e.currentTarget as Element).parentElement, align: 'start', cls: 'tool-flyout');
@@ -370,7 +409,7 @@ class ChartPage {
   // ---------------------------------------------------------------- bottom bar
 
   void _renderBottom() {
-    final c = chart;
+    final scale = _cfg?.scale ?? 'linear';
     replace(_bottom, [
       for (final r in ['1D', '5D', '1M', '3M', '6M', 'YTD', '1Y', '5Y', 'All'])
         h('button.range-btn', r, {'type': 'button', 'data-tip': 'Show $r (switches to ${rangeInterval[r]})'}, {
@@ -382,11 +421,8 @@ class ChartPage {
       _clockEl,
       h('span.tb-sep'),
       for (final (k, label, tip) in [('percent', '%', 'Percent scale'), ('log', 'log', 'Logarithmic scale'), ('linear', 'auto', 'Regular scale')])
-        h('button.range-btn${c.scale.value == k ? '.on' : ''}', label, {'type': 'button', 'data-tip': tip}, {
-          'click': (_) {
-            c.scale.value = k;
-            _renderBottom();
-          },
+        h('button.range-btn${scale == k ? '.on' : ''}', label, {'type': 'button', 'data-tip': tip}, {
+          'click': (_) => _editCfg((c) => c.scale = k, 'Price scale'),
         }),
     ]);
     _renderClock();
@@ -603,4 +639,51 @@ void showShortcuts() {
   Dialog.open('Keyboard shortcuts', h('table.shortcuts', [
     for (final (k, v) in rows) h('tr', [h('td', h('kbd', k)), h('td', v)]),
   ]), width: '520px');
+}
+
+/// Chart preferences (apply to every chart; persisted).
+void showChartSettings() {
+  HTMLElement toggle(String key, String label) {
+    final input = h('input', null, {'type': 'checkbox'}) as HTMLInputElement;
+    input.checked = store.pref<bool>(key);
+    input.addEventListener('change', ((Event _) => store.setPref(key, input.checked)).toJS);
+    return h('label.check-row', [input, ' $label']);
+  }
+
+  HTMLElement colorRow(String key, String label, List<String> options) {
+    final row = h('div.swatch-row');
+    void render() {
+      final cur = store.pref<String?>(key);
+      replace(row, [
+        h('button.swatch-btn${cur == null ? '.on' : ''}', h('span.tiny', 'Theme'), {'type': 'button'}, {
+          'click': (_) {
+            store.setPref(key, null);
+            render();
+          },
+        }),
+        for (final c in options)
+          h('button.swatch-btn${cur == c ? '.on' : ''}', h('span.swatch', null, {'style': 'background:$c'}),
+              {'type': 'button', 'aria-label': c}, {
+            'click': (_) {
+              store.setPref(key, c);
+              render();
+            },
+          }),
+      ]);
+    }
+
+    render();
+    return h('div.field-col', [h('span', label), row]);
+  }
+
+  Dialog.open('Chart settings', h('div.form-grid', [
+    toggle('chart.grid', 'Grid lines'),
+    toggle('chart.lastPriceLine', 'Last price line'),
+    toggle('chart.countdown', 'Bar close countdown (intraday)'),
+    toggle('chart.markers', 'Earnings markers'),
+    colorRow('chart.upColor', 'Up candles', ['#12b886', '#22c55e', '#26a69a', '#2f7cf6', '#e2e8f0']),
+    colorRow('chart.downColor', 'Down candles', ['#f0414f', '#ef4444', '#ef5350', '#f59e0b', '#64748b']),
+    h('div.muted.small', 'Layers, indicators and the price/volume display are remembered per symbol (Layers panel); '
+        'these settings apply to all charts.'),
+  ]), actions: [const DialogAction('Done', primary: true)], width: '440px');
 }

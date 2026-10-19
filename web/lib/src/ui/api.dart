@@ -105,7 +105,7 @@ class Api {
       [for (final a in (await request('/api/annotations${_q({'symbol': symbol})}')).list) Annotation.fromJson(a)];
 
   Future<Annotation> createAnnotation(String symbol, String type, List<Point> points,
-          {String? text, Map<String, Object?>? style, String? interval, String? tag}) async =>
+          {String? text, Map<String, Object?>? style, String? interval, String? tag, String? layer}) async =>
       Annotation.fromJson(await request('/api/annotations/${_enc(symbol)}', method: 'POST', body: {
         'type': type,
         'points': [for (final p in points) p.toJson()],
@@ -113,6 +113,7 @@ class Api {
         'style': ?style,
         'interval': ?interval,
         'tag': ?tag,
+        'layer': ?layer,
       }));
 
   Future<Annotation> updateAnnotation(String id, Map<String, Object?> patch) async =>

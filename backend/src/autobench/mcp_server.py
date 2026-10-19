@@ -594,8 +594,13 @@ def get_research_brief(symbol: Symbol) -> Any:
 
 @tool()
 def get_chart_view() -> Any:
-    """What the user's chart is showing: symbol, interval, visible range, indicators."""
-    return workspace.get_view()
+    """What the user's chart is showing: symbol, interval, visible range, indicators, and the layers the user
+    keeps on this symbol (each layer groups price, volume, indicators, other symbols and drawings)."""
+    view = dict(workspace.get_view())
+    layers = workspace.layers_summary(view.get("symbol", ""))
+    if layers is not None:
+        view["layers"] = layers
+    return view
 
 
 @tool()
@@ -651,10 +656,11 @@ def delete_annotations(
     symbol: str | None = None,
     tag: str | None = None,
     author: Annotated[Literal["agent", "user"] | None, Field(description="Use 'agent' to remove only your drawings")] = None,
+    layer: Annotated[str | None, Field(description="Only drawings in this chart layer")] = None,
 ) -> Any:
-    """Delete drawings by id, or by symbol/tag/author filter (filters combine with AND). Do not delete the
+    """Delete drawings by id, or by symbol/tag/author/layer filter (filters combine with AND). Do not delete the
     user's drawings unless asked."""
-    return annotations.delete_(ids, symbol, tag, author)
+    return annotations.delete_(ids, symbol, tag, author, layer)
 
 
 # ===================================================================================== research memory

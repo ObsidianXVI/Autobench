@@ -7,6 +7,7 @@ import 'dart:js_interop';
 import 'package:web/web.dart';
 
 import '../../core/format.dart';
+import '../../core/layers.dart';
 import '../../core/models.dart';
 import '../api.dart';
 import '../dom.dart';
@@ -28,11 +29,18 @@ class WatchlistPanel {
   List<Watchlist> _lists = const [];
   final Map<String, Quote> _quotes = {};
   final Map<String, double> _prevPrice = {};
-  final Set<String> _collapsed = {};
-  String _sort = ''; // '' | 'symbol' | '-symbol' | 'last' | '-last' | 'chg' | '-chg'
+  // sort ('' | 'symbol' | '-symbol' | 'last' | …), collapsed sections and the details height persist
+  Set<String> get _collapsed => store.prefList('watchlist.collapsed').toSet();
+  String get _sort => store.pref<String>('watchlist.sort');
+  set _sort(String v) => store.setPref('watchlist.sort', v);
+  void _toggleCollapsed(String s) {
+    final c = _collapsed;
+    c.contains(s) ? c.remove(s) : c.add(s);
+    store.setPref('watchlist.collapsed', c.toList());
+  }
   Timer? _poll;
   String? _dragSym;
-  double _detailsHeight = 300;
+  double _detailsHeight = store.pref<double>('watchlist.detailsHeight');
 
   WatchlistPanel() {
     append(root, [_head, _cols, _list, _split, details.root]);
@@ -228,7 +236,7 @@ class WatchlistPanel {
         final collapsed = _collapsed.contains(s);
         rows.add(h('div.wl-section', [icon(collapsed ? 'chev-right' : 'chev-down', size: 12), h('span', title)], null, {
           'click': (_) {
-            collapsed ? _collapsed.remove(s) : _collapsed.add(s);
+            _toggleCollapsed(s);
             _renderRows();
           },
           'contextmenu': (e) {
@@ -316,11 +324,13 @@ class WatchlistPanel {
         store.page.value = 'chart';
       }),
       MenuItem('Compare with ${store.activeChart.symbol.value}', iconName: 'compare', onSelect: () {
-        final c = store.activeChart;
-        if (!c.compares.value.contains(s) && c.symbol.value != s) {
-          c.compares.value = [...c.compares.value, s];
-          if (c.scale.value == 'linear') c.scale.value = 'percent';
-        }
+        final base = store.activeChart.symbol.value;
+        final cfg = store.configNow(base);
+        if (cfg == null || base == s || cfg.all.any((i) => i.kind == ItemKind.compare && i.symbol == s)) return;
+        store.editConfig(base, (c) {
+          c.addItem(LayerItem.compare(newId('c'), s));
+          if (c.scale == 'linear') c.scale = 'percent';
+        }, label: 'Compare $s');
       }),
       MenuItem('Add alert…', iconName: 'alarm', onSelect: () {
         // imported lazily to avoid a cycle with the chart package
@@ -372,7 +382,10 @@ class WatchlistPanel {
       _detailsHeight = (startH! - (e.clientY - startY!)).clamp(0.0, total - 120);
       details.root.style.height = '${_detailsHeight}px';
     }).toJS);
-    _split.addEventListener('pointerup', ((PointerEvent e) => startY = null).toJS);
+    _split.addEventListener('pointerup', ((PointerEvent e) {
+      startY = null;
+      store.setPref('watchlist.detailsHeight', _detailsHeight);
+    }).toJS);
   }
 }
 

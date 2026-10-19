@@ -90,6 +90,8 @@ class AnnotationIn(BaseModel):
     style: Style = Field(default_factory=Style)
     interval: str | None = Field(None, description="Only show on this interval (e.g. '1d'); omit to show on all")
     tag: str | None = Field(None, max_length=120, description="Group label, e.g. 'analysis-2025-10-18' so related drawings can be managed together")
+    layer: str | None = Field(None, max_length=80, description="Chart layer to put the drawing in (shown as a layer in the "
+                                                                "user's Layers panel). Agent drawings default to the 'agent' layer")
 
     @model_validator(mode="after")
     def _check_points(self):
@@ -121,6 +123,7 @@ class AnnotationPatch(BaseModel):
     style: Style | None = None
     interval: str | None = None
     tag: str | None = None
+    layer: str | None = None
     visible: bool | None = None
 
 

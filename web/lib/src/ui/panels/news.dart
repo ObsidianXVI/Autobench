@@ -14,7 +14,8 @@ class NewsPanel {
   final HTMLElement root = h('div.panel');
   final HTMLElement _body = h('div.panel-scroll');
   final Scope _scope = Scope();
-  bool _market = false;
+  bool get _market => store.pref<bool>('news.market');
+  set _market(bool v) => store.setPref('news.market', v);
   List<J> _items = const [];
   String? _error;
   int _seq = 0;

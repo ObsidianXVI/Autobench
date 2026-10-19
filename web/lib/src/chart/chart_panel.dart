@@ -10,6 +10,7 @@ import 'dart:math' as math;
 import 'package:web/web.dart';
 
 import '../core/chartmath.dart';
+import '../core/layers.dart';
 import '../core/format.dart';
 import '../core/models.dart';
 import '../ui/api.dart';
@@ -42,10 +43,21 @@ final syncedRange = Obs<(int, double, double)?>(null); // (source chart index, f
 String indicatorKey(IndicatorRef r) => jsonEncode(r.toJson());
 
 class _LegendRow {
-  final String key, label;
+  final String key, label; // key = layer item id
   final List<(String, String, List<double?>)> outputs; // (name, color, values)
   final int pane;
-  _LegendRow(this.key, this.label, this.outputs, this.pane);
+  final ItemKind kind;
+  _LegendRow(this.key, this.label, this.outputs, this.pane, this.kind);
+}
+
+/// Computed values of one indicator item.
+class _IndData {
+  final String label;
+  final bool overlay;
+  final List<String> outputs;
+  final List<double> levels;
+  final Map<String, List<double?>> values;
+  _IndData(this.label, this.overlay, this.outputs, this.levels, this.values);
 }
 
 class _Drag {
@@ -72,7 +84,12 @@ class ChartPanel {
 
   bool _loading = false;
   String _loadedKey = '';
-  int _loadSeq = 0, _indSeq = 0, _cmpSeq = 0;
+  int _loadSeq = 0, _indSeq = 0;
+  SymbolConfig? cfg;
+  String _indKey = '';
+  final Map<String, _IndData> _indData = {};
+  final Map<String, List<Bar?>> _cmpBars = {}; // "<symbol>|<interval>" -> bars aligned to ours
+  final Set<String> _cmpLoading = {};
   int _futureBars = 0;
   List<_LegendRow> _legendRows = [];
   int? _legendIndex;
@@ -80,7 +97,6 @@ class ChartPanel {
   _Drag? _drag;
   Timer? _liveTimer, _clock;
   String? _error;
-  final Map<String, List<double?>> _compareData = {};
   final void Function(ChartPanel) onActivate;
 
   ChartPanel(this.state, this.index, {required this.onActivate}) {
@@ -104,12 +120,15 @@ class ChartPanel {
 
     _scope.listen(state.symbol, (_) => _load());
     _scope.listen(state.interval, (_) => _load());
-    _scope.listen(state.indicators, (_) => _loadIndicators());
-    _scope.listen(state.hidden, (_) => _applyHidden());
-    _scope.listen(state.chartType, (t) => engine.setChartType(chartTypeFromName(t)));
-    _scope.listen(state.scale, (s) => engine.setScaleMode(ScaleMode.values.byName(s)));
-    _scope.listen(state.compares, (_) => _loadCompares());
-    _scope.listen(store.drawingsVersion, (_) => _applyDrawings());
+    _scope.listen(store.configVersion, (_) {
+      if (store.lastConfigChanged == symbol) _applyConfig();
+    });
+    _scope.listen(store.specs, (_) => _applyConfig());
+    _scope.listen(store.prefs, (_) => _applyPrefs());
+    _scope.listen(store.drawingsVersion, (_) {
+      _ensureDrawingLayers();
+      _applyDrawings();
+    });
     _scope.listen(store.selected, (_) => _applyDrawings());
     _scope.listen(store.drawingsHidden, (h) {
       layer.hidden = h;
@@ -125,8 +144,7 @@ class ChartPanel {
       final from = layer.mapper.logical(v.$2.round()), to = layer.mapper.logical(v.$3.round());
       if (from != null && to != null) engine.setVisibleRange(from, to);
     });
-    engine.setChartType(chartTypeFromName(state.chartType.value));
-    engine.setScaleMode(ScaleMode.values.byName(state.scale.value));
+    _applyPrefs();
     _clock = Timer.periodic(const Duration(seconds: 1), (_) => _tickCountdown());
     _load();
   }
@@ -160,26 +178,33 @@ class ChartPanel {
       store.selected.value = null;
       engine.markers = [];
     }
+    if (symbolChanged) cfg = null;
     _renderLegend();
     _renderStatus();
     store.loadDrawings(symbol).catchError((Object e) => toast('Drawings: $e', kind: 'error'));
+    final cfgFuture = store.config(symbol);
     try {
       final res = await api.bars(symbol, interval);
       if (seq != _loadSeq) return;
       final b = res.bars;
+      cfg = await cfgFuture;
+      if (seq != _loadSeq) return;
       engine.setBars(b, intraday: intraday, keepView: true);
       engine.setSeries(const []);
+      engine.setCompares(const []);
+      _indKey = '';
+      _indData.clear();
       layer.mapper.set([for (final x in b) x.time], intervalSeconds[interval] ?? 86400, intraday);
+      _ensureDrawingLayers();
       _applyDrawings();
       _applyAlerts();
-      final show = intraday ? 160 : interval == '1d' ? 180 : 150;
-      engine.setVisibleRange(math.max(0, b.length - show).toDouble(), b.length + math.max(8, _futureBars + 4).toDouble());
+      _showDefaultRange();
       _loading = false;
       if (b.isEmpty) _error = 'No data for $symbol ($interval)';
-      _renderLegend();
+      _applyConfig();
       _renderStatus();
       if (res.source.isNotEmpty) store.provider.value = res.source;
-      await Future.wait([_loadIndicators(), _loadCompares(), if (symbolChanged) _loadMarkers()]);
+      if (symbolChanged && store.pref<bool>('chart.markers')) await _loadMarkers();
       _scheduleLive();
     } catch (e) {
       if (seq != _loadSeq) return;
@@ -230,7 +255,7 @@ class ChartPanel {
   }
 
   void _tickCountdown() {
-    if (!intraday || bars.isEmpty) {
+    if (!intraday || bars.isEmpty || !store.pref<bool>('chart.countdown')) {
       if (engine.lastLabelExtra != null) {
         engine.lastLabelExtra = null;
         engine.invalidate();
@@ -254,17 +279,48 @@ class ChartPanel {
     }
   }
 
-  Future<void> _loadIndicators() async {
-    final refs = state.indicators.value;
-    final seq = ++_indSeq;
-    if (refs.isEmpty || bars.isEmpty) {
-      engine.setSeries(const []);
-      _legendRows = [];
+  // ---------------------------------------------------------------- layers → series
+
+  bool _isOverlay(String indicator) {
+    for (final sp in store.specs.value) {
+      if (sp.name == indicator) return sp.overlay;
+    }
+    return false;
+  }
+
+  /// Rebuilds everything the symbol's layers describe. Indicator values and other symbols' bars
+  /// are fetched once and cached, so toggling visibility, moving panes or re-ordering is instant.
+  void _applyConfig() {
+    final c = cfg;
+    if (c == null || bars.isEmpty) {
       _renderLegend();
       return;
     }
+    engine.setChartType(chartTypeFromName(c.price.chartType));
+    engine.showPrice = c.itemShown(c.price);
+    engine.setScaleMode(ScaleMode.values.firstWhere((m) => m.name == c.scale, orElse: () => ScaleMode.linear));
+    final indicators = c.indicatorItems;
+    final key = jsonEncode([for (final (item, r) in indicators) [item.id, r.toJson()]]);
+    if (key != _indKey) {
+      _indKey = key;
+      _fetchIndicators(indicators);
+    }
+    for (final i in c.all) {
+      if (i.kind == ItemKind.compare && i.symbol.isNotEmpty) _fetchCompare(i.symbol);
+    }
+    _rebuildSeries();
+    _applyDrawings();
+  }
+
+  Future<void> _fetchIndicators(List<(LayerItem, IndicatorRef)> items) async {
+    final seq = ++_indSeq;
+    if (items.isEmpty) {
+      _indData.clear();
+      _rebuildSeries();
+      return;
+    }
     try {
-      final res = await api.indicators(symbol, interval, refs);
+      final res = await api.indicators(symbol, interval, [for (final (_, r) in items) r]);
       if (seq != _indSeq) return;
       final idx = {for (var i = 0; i < bars.length; i++) bars[i].time: i};
       List<double?> align(List<double?> vals) {
@@ -276,79 +332,154 @@ class ChartPanel {
         return out;
       }
 
-      final series = <Series>[];
-      final rows = <_LegendRow>[];
-      var pane = 0, colorIdx = 0;
-      for (var r = 0; r < res.results.length && r < refs.length; r++) {
-        final result = res.results[r];
-        final key = indicatorKey(refs[r]);
-        final target = result.overlay ? 0 : ++pane;
-        final outs = <(String, String, List<double?>)>[];
-        var first = true;
-        for (final out in result.outputs) {
-          if (result.overlay && _hiddenOverlayOutputs.contains(out)) continue;
-          if (!result.overlay && out == 'direction') continue;
-          final vals = align(result.values[out] ?? const []);
-          final color = palette[colorIdx++ % palette.length];
-          final hist = !result.overlay && _histogramOutputs.contains(out);
-          series.add(Series(
-            id: key,
-            pane: target,
-            kind: hist ? SeriesKind.histogram : result.name == 'psar' ? SeriesKind.dots : SeriesKind.line,
-            values: vals,
-            color: color,
-            width: result.overlay ? 1.4 : 1.8,
-            dashed: out == 'middle' || out == 'signal',
-            lastValueLabel: !result.overlay && !hist,
-            levels: first && !result.overlay ? result.levels : const [],
-            visible: !state.hidden.value.contains(key),
-          ));
-          first = false;
-          outs.add((out, color, vals));
-        }
-        rows.add(_LegendRow(key, result.label, outs, target));
+      _indData.clear();
+      for (var k = 0; k < res.results.length && k < items.length; k++) {
+        final r = res.results[k];
+        _indData[items[k].$1.id] = _IndData(r.label, r.overlay, r.outputs, r.levels,
+            {for (final out in r.outputs) out: align(r.values[out] ?? const [])});
       }
-      engine.setSeries(series);
-      _legendRows = rows;
-      _renderLegend();
+      _rebuildSeries();
     } catch (e) {
       if (seq == _indSeq) toast('Indicators: $e', kind: 'error');
     }
   }
 
-  void _applyHidden() {
-    final hidden = state.hidden.value.toSet();
-    for (final s in engine.series) {
-      s.visible = !hidden.contains(s.id);
+  Future<void> _fetchCompare(String sym) async {
+    final key = '$sym|$interval';
+    if (_cmpBars.containsKey(key) || _cmpLoading.contains(key)) return;
+    _cmpLoading.add(key);
+    try {
+      final res = await api.bars(sym, interval);
+      final byTime = {for (final b in res.bars) b.time: b};
+      _cmpBars[key] = [for (final b in bars) byTime[b.time]];
+      _rebuildSeries();
+    } catch (e) {
+      toast('$sym: $e', kind: 'error');
+    } finally {
+      _cmpLoading.remove(key);
     }
-    engine.invalidate();
+  }
+
+  void _rebuildSeries() {
+    final c = cfg;
+    if (c == null || bars.isEmpty) return;
+    final shown = c.shown;
+    final panes = assignPanes(shown, (name) => _indData.values.isNotEmpty
+        ? (_indDataByName(name)?.overlay ?? _isOverlay(name))
+        : _isOverlay(name));
+    // pane indexes must be contiguous for the engine
+    final used = (panes.values.toSet()..add(0)).toList()..sort();
+    final remap = {for (var i = 0; i < used.length; i++) used[i]: i};
+    final series = <Series>[];
+    final compares = <CompareSeries>[];
+    final rows = <_LegendRow>[];
+    var colorIdx = 0;
+    var cmpIdx = 0;
+    engine.showVolume = false;
+    for (final item in shown) {
+      final pane = remap[panes[item.id] ?? 0] ?? 0;
+      switch (item.kind) {
+        case ItemKind.price:
+          break;
+        case ItemKind.volume:
+          if (pane == 0) {
+            engine.showVolume = true;
+          } else {
+            final vals = [for (final b in bars) b.volume];
+            series.add(Series(id: item.id, pane: pane, kind: SeriesKind.volume, values: vals, color: '#64748b'));
+            rows.add(_LegendRow(item.id, 'Volume', [('volume', '#64748b', vals)], pane, item.kind));
+          }
+        case ItemKind.indicator:
+          final d = _indData[item.id];
+          if (d == null) continue;
+          final outs = <(String, String, List<double?>)>[];
+          var first = true;
+          for (final out in d.outputs) {
+            if (d.overlay && _hiddenOverlayOutputs.contains(out)) continue;
+            if (!d.overlay && out == 'direction') continue;
+            final vals = d.values[out] ?? const [];
+            final color = first && item.color != null ? item.color! : palette[colorIdx++ % palette.length];
+            final hist = pane > 0 && _histogramOutputs.contains(out);
+            series.add(Series(
+              id: item.id,
+              pane: pane,
+              kind: hist ? SeriesKind.histogram : item.name == 'psar' ? SeriesKind.dots : SeriesKind.line,
+              values: vals,
+              color: color,
+              width: pane == 0 ? 1.4 : 1.8,
+              dashed: out == 'middle' || out == 'signal',
+              lastValueLabel: pane > 0 && !hist,
+              levels: first && pane > 0 ? d.levels : const [],
+            ));
+            first = false;
+            outs.add((out, color, vals));
+          }
+          rows.add(_LegendRow(item.id, d.label, outs, pane, item.kind));
+        case ItemKind.compare:
+          final data = _cmpBars['${item.symbol}|$interval'];
+          final color = item.color ?? compareColors[cmpIdx++ % compareColors.length];
+          if (data == null) continue;
+          final closes = [for (final b in data) b?.close];
+          if (pane == 0) {
+            compares.add(CompareSeries(item.symbol, color, closes));
+          } else {
+            series.add(Series(
+              id: item.id,
+              pane: pane,
+              kind: item.display == 'candles' ? SeriesKind.candles : item.display == 'area' ? SeriesKind.area : SeriesKind.line,
+              values: closes,
+              ohlc: item.display == 'candles' ? data : null,
+              color: color,
+              width: 1.6,
+              lastValueLabel: true,
+            ));
+          }
+          rows.add(_LegendRow(item.id, item.symbol, [('close', color, closes)], pane, item.kind));
+      }
+    }
+    engine.setSeries(series);
+    engine.setCompares(compares);
+    _legendRows = rows;
     _renderLegend();
   }
 
-  Future<void> _loadCompares() async {
-    final syms = state.compares.value;
-    final seq = ++_cmpSeq;
-    if (syms.isEmpty || bars.isEmpty) {
-      engine.setCompares(const []);
-      _renderLegend();
-      return;
+  _IndData? _indDataByName(String name) {
+    final c = cfg;
+    if (c == null) return null;
+    for (final (item, _) in c.indicatorItems) {
+      if (item.name == name && _indData[item.id] != null) return _indData[item.id];
     }
-    final out = <CompareSeries>[];
-    for (var i = 0; i < syms.length; i++) {
-      final sym = syms[i];
-      try {
-        final res = await api.bars(sym, interval);
-        if (seq != _cmpSeq) return;
-        final byTime = {for (final b in res.bars) b.time: b.close};
-        final aligned = [for (final b in bars) byTime[b.time]];
-        _compareData[sym] = aligned;
-        out.add(CompareSeries(sym, compareColors[i % compareColors.length], aligned));
-      } catch (e) {
-        toast('Compare $sym: $e', kind: 'error');
-      }
-    }
-    engine.setCompares(out);
-    _renderLegend();
+    return null;
+  }
+
+  void _applyPrefs() {
+    engine.showGrid = store.pref<bool>('chart.grid');
+    engine.showLastPriceLine = store.pref<bool>('chart.lastPriceLine');
+    engine.upColorOverride = store.pref<String?>('chart.upColor');
+    engine.downColorOverride = store.pref<String?>('chart.downColor');
+    if (!store.pref<bool>('chart.markers')) engine.markers = [];
+    engine.refreshTheme();
+  }
+
+  /// Drawings can name layers the symbol's configuration does not have yet (e.g. the agent's);
+  /// add them so every drawing shows up in the Layers panel.
+  void _ensureDrawingLayers() {
+    final c = cfg;
+    if (c == null) return;
+    final ids = <String?>{for (final a in store.drawingsFor(symbol)) a.layer};
+    final missing = ids.where((id) => c.layer((id == null || id.isEmpty) ? mainLayerId : id) == null).toList();
+    if (missing.isEmpty) return;
+    store.editConfig(symbol, (cc) => cc.ensureDrawingLayers(missing), record: false);
+  }
+
+  void _showDefaultRange() {
+    final n = bars.length;
+    final saved = state.spacing.value;
+    final width = engine.plotWidth > 0 ? engine.plotWidth : 900.0;
+    final pad = math.max(8, _futureBars + 4);
+    // a saved zoom covers the whole plot width, including the empty space right of the last bar
+    final show = saved != null && saved > 0 ? width / saved - pad : (intraday ? 160 : interval == '1d' ? 180 : 150).toDouble();
+    engine.setVisibleRange(n - show, n + pad.toDouble());
   }
 
   Future<void> _loadMarkers() async {
@@ -380,7 +511,12 @@ class ChartPanel {
 
   void _applyDrawings() {
     final all = store.drawingsFor(symbol);
-    final shown = [for (final a in all) if (a.interval == null || a.interval == interval) a];
+    final c = cfg;
+    final shown = [
+      for (final a in all)
+        if ((a.interval == null || a.interval == interval) && (c == null || c.layerOfDrawing(a.layer, a.author).visible)) a,
+    ];
+    layer.lockedLayers = c == null ? const {} : {for (final l in c.layers) if (l.locked) l.id};
     layer.annotations = shown;
     layer.selectedId = store.selected.value;
     final n = bars.length;
@@ -430,6 +566,8 @@ class ChartPanel {
 
   void resetView() {
     engine.resetPriceScales();
+    state.spacing.value = null;
+    store.save();
     final n = bars.length;
     final show = intraday ? 160 : interval == '1d' ? 180 : 150;
     engine.setVisibleRange(math.max(0, n - show).toDouble(), n + math.max(8, _futureBars + 4).toDouble(), notify: true);
@@ -437,6 +575,11 @@ class ChartPanel {
 
   void _rangeChanged(double from, double to) {
     _toLatest.isHidden = !engine.scrolledBack;
+    // remember the zoom level of this chart
+    if (state.spacing.value == null || (state.spacing.value! - engine.spacing).abs() > 0.05) {
+      state.spacing.value = engine.spacing;
+      store.save();
+    }
     if (!store.syncRange.value || bars.isEmpty) return;
     final tf = layer.mapper.time(from), tt = layer.mapper.time(to);
     if (tf != null && tt != null) syncedRange.value = (index, tf.toDouble(), tt.toDouble());
@@ -515,7 +658,9 @@ class ChartPanel {
       final stop = ep - (tp - ep) / 2;
       pts = [e, Point(t.time, double.parse(stop.toStringAsFixed(4))), Point(t.time, tp)];
     }
-    final created = await createDrawing(symbol, type, pts, text: text);
+    final active = cfg?.activeLayer;
+    final created = await createDrawing(symbol, type, pts, text: text,
+        layer: active == null || active == mainLayerId ? null : active);
     if (created != null) {
       store.selected.value = created.id;
       if (!store.stayInDrawMode.value) store.tool.value = 'select';
@@ -797,7 +942,9 @@ class ChartPanel {
       return;
     }
     final p = price == null ? null : double.parse(price.toStringAsFixed(price.abs() >= 1 ? 2 : 4));
-    final t = state.chartType.value;
+    final c = cfg;
+    final t = c?.price.chartType ?? 'candles';
+    final vol = c?.volume;
     showMenu([
       if (p != null) ...[
         MenuItem('Add alert at ${fmtPrice(p)}', iconName: 'alarm', onSelect: () => showAlertDialog(symbol, price: p)),
@@ -809,21 +956,25 @@ class ChartPanel {
       ],
       MenuItem('Reset chart view', iconName: 'refresh', shortcut: 'Alt+R', onSelect: resetView),
       MenuItem('Chart type', iconName: 'candles', submenu: [
-        for (final (k, label) in chartTypes) MenuItem(label, checked: t == k, onSelect: () => state.chartType.value = k),
+        for (final (k, label) in chartTypes)
+          MenuItem(label, checked: t == k, onSelect: () => store.editConfig(symbol, (c) => c.price.chartType = k, label: 'Chart type')),
       ]),
       MenuItem('Price scale', iconName: 'log', submenu: [
-        for (final s in ['linear', 'log', 'percent'])
-          MenuItem(s == 'linear' ? 'Regular' : s == 'log' ? 'Logarithmic' : 'Percent',
-              checked: state.scale.value == s, onSelect: () => state.scale.value = s),
+        for (final sc in ['linear', 'log', 'percent'])
+          MenuItem(sc == 'linear' ? 'Regular' : sc == 'log' ? 'Logarithmic' : 'Percent',
+              checked: c?.scale == sc, onSelect: () => store.editConfig(symbol, (c) => c.scale = sc, label: 'Price scale')),
       ]),
-      MenuItem(engine.showVolume ? 'Hide volume' : 'Show volume', iconName: 'chart', onSelect: () {
-        engine.showVolume = !engine.showVolume;
-        engine.invalidate();
-      }),
-      MenuItem(engine.showGrid ? 'Hide grid' : 'Show grid', iconName: 'table', onSelect: () {
-        engine.showGrid = !engine.showGrid;
-        engine.invalidate();
-      }),
+      if (c != null)
+        MenuItem(c.itemShown(c.price) ? 'Hide price chart' : 'Show price chart', iconName: 'candles',
+            onSelect: () => store.editConfig(symbol, (c) => c.price.visible = !c.price.visible, label: 'Price visibility')),
+      if (vol != null)
+        MenuItem(vol.visible ? 'Hide volume' : 'Show volume', iconName: 'chart',
+            onSelect: () => store.editConfig(symbol, (c) => c.volume!.visible = !c.volume!.visible, label: 'Volume visibility'))
+      else if (c != null)
+        MenuItem('Add volume', iconName: 'chart', onSelect: () => store.editConfig(symbol, (c) => c.addItem(LayerItem.volume()),
+            label: 'Add volume')),
+      MenuItem(store.pref<bool>('chart.grid') ? 'Hide grid' : 'Show grid', iconName: 'table',
+          onSelect: () => store.setPref('chart.grid', !store.pref<bool>('chart.grid'))),
       const MenuItem.divider(),
       MenuItem(store.drawingsHidden.value ? 'Show drawings' : 'Hide drawings', iconName: 'eye',
           onSelect: () => store.drawingsHidden.value = !store.drawingsHidden.value),
@@ -864,14 +1015,19 @@ class ChartPanel {
 
   void _renderLegend() {
     final b = bars;
-    final idx = _legendIndex ?? (b.isEmpty ? null : b.length - 1);
+    final n = math.min(b.length, engine.bars.length);
+    // the hovered index can outlive the bars it pointed into (symbol/interval change)
+    final hovered = _legendIndex;
+    final idx = hovered != null && hovered < n ? hovered : (n == 0 ? null : n - 1);
     final bar = idx == null ? null : engine.bars[idx];
     final raw = idx == null ? null : b[idx];
     final prev = idx != null && idx > 0 ? b[idx - 1] : null;
     final chg = raw != null && prev != null ? (raw.close - prev.close) / prev.close * 100 : null;
     final cls = chg == null ? '' : chg >= 0 ? '.up' : '.down';
+    final c = cfg;
+    final priceShown = c == null || c.itemShown(c.price);
     replace(_legend, [
-      h('div.legend-row.legend-main', [
+      h('div.legend-row.legend-main${priceShown ? '' : '.dim'}', [
         h('button.legend-symbol', symbol, {'type': 'button', 'data-tip': 'Change symbol (or just start typing)'},
             {'click': (_) => window.dispatchEvent(CustomEvent('open-symbol-search'))}),
         h('span.legend-interval', intervalLabel(interval)),
@@ -884,17 +1040,17 @@ class ChartPanel {
             if (chg != null) h('b$cls', '${signed(raw!.close - prev!.close)} (${signed(chg)}%)'),
             h('span.muted', 'Vol'), h('b', compact(raw!.volume)),
           ]),
+        if (c != null)
+          h('span.ind-actions.main-actions', [
+            h('button.legend-x', icon(priceShown ? 'eye' : 'eye-off', size: 13),
+                {'type': 'button', 'aria-label': 'Toggle price chart'}, {
+              'click': (_) => store.editConfig(symbol, (c) => c.price.visible = !c.price.visible, label: 'Price visibility'),
+            }),
+            h('button.legend-x', icon('settings', size: 13), {'type': 'button', 'aria-label': 'Price chart settings'},
+                {'click': (_) => editLayerItem(symbol, c.price.id)}),
+          ]),
         if (_loading) h('span.muted', 'loading…'),
       ]),
-      for (final (i, sym) in state.compares.value.indexed)
-        h('div.legend-row.small', [
-          h('span.dot', null, {'style': 'background:${compareColors[i % compareColors.length]}'}),
-          h('span', sym),
-          h('span.muted', _compareValue(sym, idx)),
-          h('button.legend-x', icon('x', size: 12), {'type': 'button', 'aria-label': 'Remove $sym'}, {
-            'click': (_) => state.compares.value = [...state.compares.value]..remove(sym),
-          }),
-        ]),
       for (final r in _legendRows.where((r) => r.pane == 0)) _legendRow(r, idx),
     ]);
     replace(_paneLegends, [
@@ -904,9 +1060,8 @@ class ChartPanel {
     _afterDraw();
   }
 
-  String _compareValue(String sym, int? idx) {
-    final data = _compareData[sym];
-    if (data == null || idx == null || idx >= data.length || data[idx] == null) return '';
+  String _compareValue(List<double?> data, int? idx) {
+    if (idx == null || idx >= data.length || data[idx] == null) return '–';
     final (from, _) = engine.visibleRange;
     double? base;
     for (var i = math.max(0, from.floor()); i < data.length; i++) {
@@ -920,28 +1075,30 @@ class ChartPanel {
   }
 
   HTMLElement _legendRow(_LegendRow r, int? idx) {
-    final hidden = state.hidden.value.contains(r.key);
-    return h('div.legend-row.small.ind-row${hidden ? '.dim' : ''}', [
-      h('span.ind-name', r.label),
-      for (final (_, color, values) in r.outputs)
-        h('span.ind-val', fmt(idx != null && idx < values.length ? values[idx] : null), {'style': 'color:$color'}),
-      h('span.ind-actions', [
-        h('button.legend-x', icon(hidden ? 'eye-off' : 'eye', size: 13), {'type': 'button', 'aria-label': 'Toggle ${r.label}'}, {
-          'click': (_) {
-            final hs = [...state.hidden.value];
-            hs.contains(r.key) ? hs.remove(r.key) : hs.add(r.key);
-            state.hidden.value = hs;
-          },
-        }),
-        h('button.legend-x', icon('settings', size: 13), {'type': 'button', 'aria-label': 'Settings for ${r.label}'},
-            {'click': (_) => editIndicator(state, r.key)}),
-        h('button.legend-x', icon('x', size: 13), {'type': 'button', 'aria-label': 'Remove ${r.label}'}, {
-          'click': (_) => state.indicators.value = [
-                for (final x in state.indicators.value)
-                  if (indicatorKey(x) != r.key) x
-              ],
-        }),
-      ]),
+    final c = cfg;
+    final item = c?.find(r.key)?.$2;
+    final layerName = c?.find(r.key)?.$1.name;
+    return h('div.legend-row.small.ind-row', [
+      if (r.kind == ItemKind.compare) h('span.dot', null, {'style': 'background:${r.outputs.first.$2}'}),
+      h('span.ind-name', r.label, {'data-tip': layerName == null ? '' : 'Layer: $layerName'}),
+      if (r.kind == ItemKind.compare)
+        h('span.ind-val', _compareValue(r.outputs.first.$3, idx))
+      else
+        for (final (_, color, values) in r.outputs)
+          h('span.ind-val', r.kind == ItemKind.volume
+              ? compact(idx != null && idx < values.length ? values[idx] : null)
+              : fmt(idx != null && idx < values.length ? values[idx] : null), {'style': 'color:$color'}),
+      if (item != null)
+        h('span.ind-actions', [
+          h('button.legend-x', icon('eye', size: 13), {'type': 'button', 'aria-label': 'Hide ${r.label}'}, {
+            'click': (_) => store.editConfig(symbol, (c) => c.find(r.key)?.$2.visible = false, label: 'Hide ${r.label}'),
+          }),
+          h('button.legend-x', icon('settings', size: 13), {'type': 'button', 'aria-label': 'Settings for ${r.label}'},
+              {'click': (_) => editLayerItem(symbol, r.key)}),
+          h('button.legend-x', icon('x', size: 13), {'type': 'button', 'aria-label': 'Remove ${r.label}'}, {
+            'click': (_) => store.editConfig(symbol, (c) => c.removeItem(r.key), label: 'Remove ${r.label}'),
+          }),
+        ]),
     ]);
   }
 
@@ -953,7 +1110,11 @@ class ChartPanel {
     o['bars'] = (() => bars.length.toJS).toJS;
     o['series'] = (() => engine.series.length.toJS).toJS;
     o['panes'] = (() => engine.paneCount.toJS).toJS;
-    o['compares'] = (() => engine.compares.length.toJS).toJS;
+    o['compares'] = (() => _legendRows.where((r) => r.kind == ItemKind.compare).length.toJS).toJS;
+    o['layers'] = (() => cfg == null ? null : jsonEncode(cfg!.toJson()).toJS).toJS;
+    o['showPrice'] = (() => engine.showPrice.toJS).toJS;
+    o['showVolume'] = (() => engine.showVolume.toJS).toJS;
+    o['spacing'] = (() => engine.spacing.toJS).toJS;
     o['priceLines'] = (() => engine.priceLines.length.toJS).toJS;
     o['chartType'] = (() => engine.chartType.name.toJS).toJS;
     o['scale'] = (() => engine.scaleMode.name.toJS).toJS;
@@ -1065,40 +1226,105 @@ Future<void> showAlertDialog(String symbol, {double? price, String? annotationId
   ]);
 }
 
-/// Indicator settings dialog: edit the parameters of one indicator on a chart.
-Future<void> editIndicator(ChartState chart, String key) async {
-  final refs = chart.indicators.value;
-  final i = refs.indexWhere((r) => indicatorKey(r) == key);
-  if (i < 0) return;
-  final ref = refs[i];
-  final spec = store.specs.value.where((s) => s.name == ref.name).firstOrNull;
-  if (spec == null) return;
+/// Settings for one layer item: chart type (price), parameters and color (indicators), placement
+/// (main pane / own pane / with another item), display (other symbols), and its layer.
+Future<void> editLayerItem(String symbol, String itemId) async {
+  final cfg = store.configNow(symbol);
+  final found = cfg?.find(itemId);
+  if (cfg == null || found == null) return;
+  final (curLayer, item) = found;
+  final spec = item.kind == ItemKind.indicator ? store.specs.value.where((s) => s.name == item.name).firstOrNull : null;
   final inputs = <String, HTMLInputElement>{};
-  Dialog.open('${spec.title} settings', h('div.form-grid', [
-    h('div.muted.small', spec.description),
-    for (final e in spec.params.entries)
-      h('label.field-col', [
-        h('span', e.key),
-        inputs[e.key] = h('input.input', null, {'value': '${ref.params[e.key] ?? e.value ?? ''}'}) as HTMLInputElement,
-      ]),
+  HTMLSelectElement sel(List<(String, String)> opts, String value) {
+    final e = h('select.input.select', [for (final (v, l) in opts) h('option', l, {'value': v})]) as HTMLSelectElement;
+    e.value = value;
+    return e;
+  }
+
+  final others = [
+    for (final i in cfg.all)
+      if (i.id != item.id && i.kind != ItemKind.price) i
+  ];
+  final paneSel = sel([
+    ('auto', 'Automatic'),
+    ('main', 'Main price pane'),
+    ('new', 'Its own pane'),
+    for (final o in others) ('with:${o.id}', 'With ${o.label}'),
+  ], item.pane);
+  final layerSel = sel([for (final l in cfg.layers) (l.id, l.name)], curLayer.id);
+  final typeSel = sel([for (final (k, l) in chartTypes) (k, l)], item.chartType);
+  final displaySel = sel([('line', 'Line'), ('area', 'Area'), ('candles', 'Candles')], item.display);
+  var color = item.color;
+  final swatches = h('div.swatch-row');
+  void renderSwatches() {
+    replace(swatches, [
+      h('button.swatch-btn${color == null ? '.on' : ''}', h('span.tiny', 'Auto'), {'type': 'button'}, {
+        'click': (_) {
+          color = null;
+          renderSwatches();
+        },
+      }),
+      for (final c in [...palette, ...compareColors])
+        h('button.swatch-btn${color == c ? '.on' : ''}', h('span.swatch', null, {'style': 'background:$c'}),
+            {'type': 'button', 'aria-label': c}, {
+          'click': (_) {
+            color = c;
+            renderSwatches();
+          },
+        }),
+    ]);
+  }
+
+  renderSwatches();
+  final title = switch (item.kind) {
+    ItemKind.price => '$symbol price chart',
+    ItemKind.volume => 'Volume',
+    ItemKind.indicator => spec?.title ?? item.name,
+    ItemKind.compare => item.symbol,
+  };
+  Dialog.open('$title settings', h('div.form-grid', [
+    if (spec != null) h('div.muted.small', spec.description),
+    if (item.kind == ItemKind.price) h('label.field-col', [h('span', 'Chart type'), typeSel]),
+    if (spec != null)
+      for (final e in spec.params.entries)
+        h('label.field-col', [
+          h('span', e.key),
+          inputs[e.key] = h('input.input', null, {'value': '${item.params[e.key] ?? e.value ?? ''}'}) as HTMLInputElement,
+        ]),
+    if (item.kind == ItemKind.compare) h('label.field-col', [h('span', 'Display in its own pane as'), displaySel]),
+    if (item.kind != ItemKind.price) h('label.field-col', [h('span', 'Pane'), paneSel]),
+    if (item.kind == ItemKind.indicator || item.kind == ItemKind.compare) h('div.field-col', [h('span', 'Color'), swatches]),
+    h('label.field-col', [h('span', 'Layer'), layerSel]),
   ]), actions: [
-    DialogAction('Defaults', onPressed: () {
-      for (final e in spec.params.entries) {
-        inputs[e.key]!.value = '${e.value ?? ''}';
-      }
-      return false;
-    }),
+    if (spec != null)
+      DialogAction('Defaults', onPressed: () {
+        for (final e in spec.params.entries) {
+          inputs[e.key]!.value = '${e.value ?? ''}';
+        }
+        return false;
+      }),
     const DialogAction('Cancel'),
     DialogAction('Apply', primary: true, onPressed: () {
-      final p = <String, Object>{};
-      for (final e in spec.params.entries) {
-        final raw = inputs[e.key]!.value.trim();
-        if (raw.isEmpty || raw == '${e.value}') continue;
-        p[e.key] = e.value is num ? (num.tryParse(raw) ?? e.value!) : raw;
-      }
-      final next = [...refs];
-      next[i] = IndicatorRef(ref.name, p);
-      chart.indicators.value = next;
+      store.editConfig(symbol, (c) {
+        final it = c.find(itemId)?.$2;
+        if (it == null) return;
+        if (it.kind == ItemKind.price) it.chartType = typeSel.value;
+        if (spec != null) {
+          final p = <String, Object>{};
+          for (final e in spec.params.entries) {
+            final raw = inputs[e.key]!.value.trim();
+            if (raw.isEmpty || raw == '${e.value}') continue;
+            p[e.key] = e.value is num ? (num.tryParse(raw) ?? e.value!) : raw;
+          }
+          it.params
+            ..clear()
+            ..addAll(p);
+        }
+        if (it.kind == ItemKind.compare) it.display = displaySel.value;
+        if (it.kind != ItemKind.price) it.pane = paneSel.value;
+        if (it.kind == ItemKind.indicator || it.kind == ItemKind.compare) it.color = color;
+        if (layerSel.value != c.find(itemId)!.$1.id) c.moveItem(itemId, layerSel.value);
+      }, label: 'Edit $title');
       return true;
     }),
   ]);

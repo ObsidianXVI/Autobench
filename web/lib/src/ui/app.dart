@@ -1,6 +1,7 @@
 // Application shell: top navigation (hash routed pages), theme, alerts bell, connection status,
 // WebSocket event handling (agent ↔ active chart view sync, drawings, alerts, navigation).
 import 'dart:async';
+import 'dart:convert';
 import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
 
@@ -9,6 +10,7 @@ import 'package:web/web.dart';
 import '../chart/chart_page.dart';
 import '../chart/chart_panel.dart';
 import '../core/json.dart';
+import '../core/layers.dart';
 import '../core/models.dart';
 import 'api.dart';
 import 'dom.dart';
@@ -76,13 +78,22 @@ class App {
     // agent sync: what the user looks at on the active chart is the shared "view"
     void watchActive() {
       for (final c in store.charts) {
-        for (final o in <Obs<Object?>>[c.symbol, c.interval, c.indicators]) {
+        for (final o in <Obs<Object?>>[c.symbol, c.interval]) {
           _scope.add(o.listen((_) {
             if (identical(c, store.activeChart)) _pushView();
           }));
         }
       }
     }
+
+    _scope.listen(store.configVersion, (_) {
+      if (store.lastConfigChanged == store.activeChart.symbol.value) _pushView();
+    });
+    // save everything still pending when the tab is hidden or closed
+    document.addEventListener('visibilitychange', ((Event _) {
+      if (document.hidden) store.flush();
+    }).toJS);
+    window.addEventListener('pagehide', ((Event _) => store.flush()).toJS);
 
     watchActive();
     _scope.listen(store.layoutVersion, (_) => watchActive());
@@ -221,10 +232,16 @@ class App {
     if (_applyingRemoteView) return;
     _viewSync(() {
       final c = store.activeChart;
+      final cfg = store.configNow(c.symbol.value);
       request('/api/view', method: 'PUT', body: {
         'symbol': c.symbol.value,
         'interval': c.interval.value,
-        'indicators': [for (final r in c.indicators.value) r.toJson()],
+        // what is on screen: the indicators of every visible layer
+        'indicators': [
+          if (cfg != null)
+            for (final i in cfg.shown)
+              if (i.kind == ItemKind.indicator) i.ref.toJson(),
+        ],
       }).catchError((Object _) => const J(null));
     });
   }
@@ -235,11 +252,24 @@ class App {
     try {
       if (v['symbol'].s != null) c.symbol.value = v['symbol'].s!;
       if (v['interval'].s != null) c.interval.value = v['interval'].s!;
-      if (v['indicators'].v is List) {
-        c.indicators.value = [for (final r in v['indicators'].list) IndicatorRef.fromJson(r)];
-      }
     } finally {
       _applyingRemoteView = false;
+    }
+    if (v['indicators'].v is List) {
+      // the agent's indicators live in the symbol's Agent layer, next to (not instead of) the user's
+      final refs = [for (final r in v['indicators'].list) IndicatorRef.fromJson(r)];
+      final sym = c.symbol.value;
+      store.config(sym).then((cfg) {
+        final mine = {for (final l in cfg.layers) if (l.id != agentLayerId) for (final i in l.items) if (i.kind == ItemKind.indicator) jsonEncode(i.ref.toJson())};
+        store.editConfig(sym, (cc) {
+          final agent = cc.agentLayer()..visible = true;
+          agent.items.removeWhere((i) => i.kind == ItemKind.indicator);
+          for (final r in refs) {
+            if (mine.contains(jsonEncode(r.toJson()))) continue; // already on the user's layers
+            agent.items.add(LayerItem.indicator(newId('a'), r.name, Map.of(r.params)));
+          }
+        }, label: 'Agent indicators');
+      });
     }
     final from = v['from_time'].i;
     if (from != null) {

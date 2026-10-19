@@ -37,6 +37,7 @@ class Annotation {
   final J style;
   final String author; // "agent" | "user"
   final String? tag;
+  final String? layer; // chart layer id (null = main)
   final bool visible;
 
   const Annotation({
@@ -49,6 +50,7 @@ class Annotation {
     this.style = const J(null),
     this.author = 'user',
     this.tag,
+    this.layer,
     this.visible = true,
   });
 
@@ -62,6 +64,7 @@ class Annotation {
         style: j['style'],
         author: j['author'].s ?? 'user',
         tag: j['tag'].s,
+        layer: j['layer'].s,
         visible: j['visible'].b ?? true,
       );
 }

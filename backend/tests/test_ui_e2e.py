@@ -90,6 +90,8 @@ def _reset(server):
         httpx.delete(f"{server}/api/alerts/{a['id']}")
     for sym in ("SPY", "NVDA", "AMD", "AAPL", "MSFT"):
         httpx.delete(f"{server}/api/annotations", params={"symbol": sym})
+    for cfg in httpx.get(f"{server}/api/chart-config").json():
+        httpx.delete(f"{server}/api/chart-config/{cfg}")
 
 
 @pytest.fixture
@@ -372,3 +374,152 @@ def test_mobile_and_light_theme(browser, server):
         pg.wait_for_timeout(800)
         assert pg.evaluate("document.documentElement.scrollWidth") <= 392, tab
     pg.close()
+
+
+def _layers(page) -> list[dict]:
+    import json
+    return json.loads(page.evaluate("__autobench.chart.active().layers()"))["layers"]
+
+
+def _goto_symbol(page, sym: str):
+    page.mouse.click(400, 400)
+    page.keyboard.type(sym, delay=40)
+    page.wait_for_selector(".search-row")
+    page.keyboard.press("Enter")
+    page.wait_for_function(f"document.querySelector('.legend-symbol').textContent === '{sym}'")
+    page.wait_for_function("__autobench.chart.active().layers() !== null && __autobench.bars() > 0")
+
+
+def _open_layers(page):
+    if not page.is_visible(".layers-panel"):
+        page.click("button[aria-label='Layers & objects']")
+    page.wait_for_selector(".layers-panel .layer-head")
+
+
+def test_each_symbol_remembers_its_layers(page, server):
+    _goto_symbol(page, "AAPL")
+    page.keyboard.press("/")
+    page.fill(".ind-dialog input", "macd")
+    page.click(".ind-item >> nth=0")
+    page.keyboard.press("Escape")
+    page.wait_for_function("__autobench.panes() === 3")
+    page.wait_for_function("fetch('/api/chart-config/AAPL').then(r => r.json()).then(c => JSON.stringify(c).includes('macd'))")
+    _goto_symbol(page, "MSFT")
+    page.wait_for_function("__autobench.panes() === 2")  # MSFT keeps the default template
+    assert "macd" not in page.evaluate("__autobench.chart.active().layers()")
+    _goto_symbol(page, "AAPL")
+    page.wait_for_function("__autobench.panes() === 3")
+    assert "macd" in page.inner_text(".pane-legends")
+
+
+def test_layer_create_hide_lock_and_delete(page, server):
+    _open_layers(page)
+    page.click(".layers-panel button[aria-label='New layer']")
+    page.fill(".dialog input", "Setups")
+    page.keyboard.press("Enter")
+    page.wait_for_selector(".layer-head:has-text('Setups').active")
+    assert _layers(page)[0]["name"] == "Setups"  # new layers go on top and become active
+    # an indicator added now lands on the active layer
+    page.mouse.click(400, 400)
+    page.keyboard.press("/")
+    page.fill(".ind-dialog input", "macd")
+    page.click(".ind-item >> nth=0")
+    page.keyboard.press("Escape")
+    page.wait_for_function("__autobench.panes() === 3")
+    assert any(i.get("name") == "macd" for i in _layers(page)[0]["items"])
+    # so does a drawing
+    box = chart_box(page)
+    page.mouse.click(box["x"] + 300, box["y"] + 300)
+    page.keyboard.press("Alt+KeyH")
+    page.mouse.click(box["x"] + box["width"] * 0.4, box["y"] + box["height"] * 0.3)
+    page.wait_for_function("__autobench.drawn() === 1")
+    lid = _layers(page)[0]["id"]
+    assert annotations(server, "SPY")[0]["layer"] == lid
+    page.keyboard.press("Escape")
+    # hiding the layer hides its indicator and drawing
+    page.click(".layers-panel button[aria-label='Hide layer Setups']")
+    page.wait_for_function("__autobench.panes() === 2 && __autobench.drawn() === 0")
+    page.click(".layers-panel button[aria-label='Show layer Setups']")
+    page.wait_for_function("__autobench.panes() === 3 && __autobench.drawn() === 1")
+    page.click(".layers-panel button[aria-label='Lock layer Setups']")
+    page.wait_for_function(f"__autobench.chart.active().layers().includes('\"locked\":true')")
+    # deleting the layer removes its items and drawings (after confirming)
+    page.click(".layers-panel button[aria-label='Layer Setups menu']")
+    page.click(".menu-item:has-text('Delete layer')")
+    page.click(".dialog button:has-text('Delete')")
+    page.wait_for_function("__autobench.panes() === 2 && __autobench.drawn() === 0")
+    page.wait_for_function("fetch('/api/annotations?symbol=SPY').then(r => r.json()).then(a => a.length === 0)")
+    assert [l["name"] for l in _layers(page)] == ["Main"]
+
+
+def test_price_and_volume_hide_and_volume_in_own_pane(page):
+    _open_layers(page)
+    assert page.evaluate("__autobench.chart.active().showPrice()") is True
+    page.click(".layers-panel button[aria-label^='Hide Price']")
+    page.wait_for_function("__autobench.chart.active().showPrice() === false")
+    page.click(".layers-panel button[aria-label^='Show Price']")
+    page.wait_for_function("__autobench.chart.active().showPrice() === true")
+    page.click(".layers-panel button[aria-label='Hide Volume']")
+    page.wait_for_function("__autobench.chart.active().showVolume() === false")
+    page.click(".layers-panel button[aria-label='Show Volume']")
+    page.wait_for_function("__autobench.chart.active().showVolume() === true")
+    page.click(".layers-panel button[aria-label='Settings for Volume']")
+    page.select_option(".dialog label:has-text('Pane') select", "new")
+    page.click(".dialog button:has-text('Apply')")
+    page.wait_for_function("__autobench.panes() === 3")  # main, volume, rsi
+
+
+def test_compare_symbol_as_candles_in_own_pane(page):
+    _open_layers(page)
+    page.click(".layers-panel button[aria-label='Layer Main menu']")
+    page.click(".menu-item:has-text('Add symbol')")
+    page.keyboard.type("NVDA", delay=40)
+    page.wait_for_selector(".search-row")
+    page.keyboard.press("Enter")
+    page.wait_for_function("__autobench.panes() === 3")  # added in its own pane
+    page.click(".layers-panel button[aria-label^='Settings for NVDA']")
+    page.select_option(".dialog label:has-text('Display') select", "candles")
+    page.click(".dialog button:has-text('Apply')")
+    page.wait_for_function("__autobench.chart.active().layers().includes('\"display\":\"candles\"')")
+    page.wait_for_function("__autobench.panes() === 3")
+
+
+def test_drawing_moves_between_layers(page, server):
+    _open_layers(page)
+    box = chart_box(page)
+    page.mouse.click(box["x"] + 300, box["y"] + 300)
+    page.keyboard.press("Alt+KeyH")
+    page.mouse.click(box["x"] + box["width"] * 0.4, box["y"] + box["height"] * 0.3)
+    page.wait_for_function("__autobench.drawn() === 1")
+    assert annotations(server, "SPY")[0].get("layer") in (None, "main")
+    page.keyboard.press("Escape")
+    page.click(".layers-panel button[aria-label='New layer']")
+    page.fill(".dialog input", "Levels")
+    page.keyboard.press("Enter")
+    page.wait_for_selector(".layer-head:has-text('Levels')")
+    page.drag_and_drop(".layer-row.drawing", ".layer-head:has-text('Levels')")
+    page.wait_for_function("fetch('/api/annotations?symbol=SPY').then(r => r.json()).then(a => a[0].layer && a[0].layer !== 'main')")
+    page.click(".layers-panel button[aria-label='Hide layer Levels']")
+    page.wait_for_function("__autobench.drawn() === 0")
+    page.click(".layers-panel button[aria-label='Hide layer Main']")
+    page.wait_for_function("__autobench.series() === 0 || !__autobench.chart.active().showPrice()")
+
+
+def test_reload_restores_zoom_prefs_and_panels(page, server):
+    _open_layers(page)
+    page.click(".tb.iv:text-is('1H')")
+    page.wait_for_function("document.querySelector('.legend-interval').textContent === '1H' && __autobench.bars() > 100")
+    box = chart_box(page)
+    page.mouse.move(box["x"] + box["width"] * 0.5, box["y"] + box["height"] * 0.5)
+    page.mouse.wheel(0, -400)
+    page.wait_for_timeout(200)
+    spacing = page.evaluate("__autobench.chart.active().spacing()")
+    page.click(".layers-panel button[aria-label='Hide Volume']")
+    page.wait_for_function("__autobench.chart.active().showVolume() === false")
+    page.wait_for_timeout(1200)  # debounced saves
+    page.reload()
+    page.wait_for_function("window.__autobench && __autobench.bars() > 0 && __autobench.chart.active().layers() !== null")
+    assert page.inner_text(".legend-interval") == "1H"
+    assert page.is_visible(".layers-panel")
+    page.wait_for_function("__autobench.chart.active().showVolume() === false")
+    page.wait_for_function(f"Math.abs(__autobench.chart.active().spacing() - {spacing}) / {spacing} < 0.03")

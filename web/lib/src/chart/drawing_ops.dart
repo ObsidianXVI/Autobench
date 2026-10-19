@@ -16,14 +16,14 @@ Map<String, Object?> _styleMap(Annotation a) => {
     };
 
 Future<Annotation> _recreate(Annotation a) => api.createAnnotation(a.symbol, a.type, a.points,
-    text: a.text, style: _styleMap(a), interval: a.interval, tag: a.tag);
+    text: a.text, style: _styleMap(a), interval: a.interval, tag: a.tag, layer: a.layer);
 
 void _pushed() => store.undoVersion.value++;
 
 Future<Annotation?> createDrawing(String symbol, String type, List<Point> points,
-    {String? text, Map<String, Object?>? style, String? interval, bool record = true}) async {
+    {String? text, Map<String, Object?>? style, String? interval, String? layer, bool record = true}) async {
   try {
-    final a = await api.createAnnotation(symbol, type, points, text: text, style: style, interval: interval);
+    final a = await api.createAnnotation(symbol, type, points, text: text, style: style, interval: interval, layer: layer);
     store.upsertDrawing(a);
     if (record) {
       final ref = _Ref(a.id);
@@ -95,7 +95,7 @@ Future<Annotation?> cloneDrawing(Annotation a) {
   final shifted = [
     for (final p in a.points) Point(p.time, p.price == null ? null : double.parse((p.price! * 1.01).toStringAsFixed(4))),
   ];
-  return createDrawing(a.symbol, a.type, shifted, text: a.text, style: _styleMap(a), interval: a.interval);
+  return createDrawing(a.symbol, a.type, shifted, text: a.text, style: _styleMap(a), interval: a.interval, layer: a.layer);
 }
 
 Future<void> undoLast() async {

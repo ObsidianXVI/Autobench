@@ -4,14 +4,12 @@ import 'dart:js_interop';
 
 import 'package:web/web.dart';
 
-import '../../chart/drawing_ops.dart';
 import '../../core/format.dart';
 import '../../core/json.dart';
 import '../../core/models.dart';
 import '../../core/time.dart';
 import '../api.dart';
 import '../dom.dart';
-import '../kit/icons.dart';
 import '../kit/overlay.dart';
 import '../kit/state.dart';
 import '../store.dart';
@@ -181,7 +179,7 @@ class AgentPanel {
               h('button.btn.small', 'Drawings: ${a['annotation_tag'].s}', {'type': 'button'}, {
                 'click': (_) {
                   store.activeChart.symbol.value = a['symbol'].s!;
-                  store.panel.value = 'objects';
+                  store.panel.value = 'layers';
                 },
               }),
           ]),
@@ -286,95 +284,6 @@ class NotesPanel {
             }),
           ],
         ]),
-    ]);
-  }
-}
-
-/// Drawings on the active symbol, grouped by author and tag, with show/hide, lock and delete.
-class ObjectsPanel {
-  final HTMLElement root = h('div.panel');
-  final HTMLElement _body = h('div.panel-scroll');
-  final Scope _scope = Scope();
-
-  ObjectsPanel() {
-    append(root, [h('div.panel-head', [h('span.panel-title.static', 'Object tree')]), _body]);
-    _scope.listen(store.drawingsVersion, (_) => _render());
-    _scope.listen(store.selected, (_) => _render());
-    for (final c in store.charts) {
-      _scope.listen(c.symbol, (_) => _render());
-    }
-    _scope.listen(store.active, (_) => _render());
-    _render();
-  }
-
-  void dispose() => _scope.dispose();
-
-  void _render() {
-    final sym = store.activeChart.symbol.value;
-    final all = store.drawingsFor(sym);
-    final groups = <String, List<Annotation>>{};
-    for (final a in all) {
-      final key = a.author == 'agent' ? '✦ Agent${a.tag != null ? ' · ${a.tag}' : ''}' : 'You${a.tag != null ? ' · ${a.tag}' : ''}';
-      groups.putIfAbsent(key, () => []).add(a);
-    }
-    replace(_body, [
-      if (all.isEmpty)
-        h('div.empty-state', [
-          icon('layers', size: 28),
-          h('div', 'No drawings on $sym'),
-          h('div.muted.small', 'Use the tools on the left of the chart, or let the agent draw its analysis.'),
-        ]),
-      for (final e in groups.entries) ...[
-        h('div.obj-group', [
-          h('span', e.key),
-          h('span.spacer'),
-          h('button.icon-btn', icon('eye', size: 13), {'type': 'button', 'data-tip': 'Show/hide group'}, {
-            'click': (_) async {
-              final anyVisible = e.value.any((a) => a.visible);
-              for (final a in e.value) {
-                await api.updateAnnotation(a.id, {'visible': !anyVisible});
-              }
-              store.loadDrawings(sym, force: true);
-            },
-          }),
-          h('button.icon-btn', icon('trash', size: 13), {'type': 'button', 'data-tip': 'Delete group'}, {
-            'click': (_) async {
-              if (!await confirmDialog('Delete drawings', 'Delete ${e.value.length} drawings (${e.key})?',
-                  confirm: 'Delete', danger: true)) {
-                return;
-              }
-              for (final a in e.value) {
-                await api.deleteAnnotation(a.id);
-              }
-              store.loadDrawings(sym, force: true);
-            },
-          }),
-        ]),
-        for (final a in e.value)
-          h('div.obj-row${a.id == store.selected.value ? '.selected' : ''}${a.visible ? '' : '.dim'}', [
-            h('span.obj-type', a.type.replaceAll('_', ' ')),
-            h('span.ellipsis.muted', a.text ?? ''),
-            h('span.spacer'),
-            if (a.style['locked'].b == true) icon('lock', size: 12),
-            h('button.icon-btn', icon(a.visible ? 'eye' : 'eye-off', size: 13), {'type': 'button', 'aria-label': 'Toggle'}, {
-              'click': (ev) {
-                ev.stopPropagation();
-                updateDrawing(a, {'visible': !a.visible}, label: a.visible ? 'Hide drawing' : 'Show drawing');
-              },
-            }),
-            h('button.icon-btn', icon('trash', size: 13), {'type': 'button', 'aria-label': 'Delete'}, {
-              'click': (ev) {
-                ev.stopPropagation();
-                deleteDrawing(a);
-              },
-            }),
-          ], null, {
-            'click': (_) {
-              store.selected.value = a.id;
-              store.page.value = 'chart';
-            },
-          }),
-      ],
     ]);
   }
 }

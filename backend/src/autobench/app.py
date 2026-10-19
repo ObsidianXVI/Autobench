@@ -246,8 +246,8 @@ def create_app() -> FastAPI:
         return res
 
     @app.delete("/api/annotations")
-    def ann_delete_filtered(symbol: str, tag: str | None = None, author: str | None = None):
-        return annotations.delete_(symbol=symbol, tag=tag, author=author)
+    def ann_delete_filtered(symbol: str, tag: str | None = None, author: str | None = None, layer: str | None = None):
+        return annotations.delete_(symbol=symbol, tag=tag, author=author, layer=layer)
 
     # --- analyses / notes / watchlists / view ---------------------------------------------
 
@@ -432,6 +432,36 @@ def create_app() -> FastAPI:
     @app.put("/api/ui-state")
     def ui_state_set(data: dict = Body(...)):
         return workspace.set_ui_state(data)
+
+    @app.post("/api/ui-state")
+    async def ui_state_beacon(request: Request):
+        """Same as PUT, for navigator.sendBeacon (which can only POST) when the page is closing."""
+        import json as _json
+
+        return workspace.set_ui_state(_json.loads(await request.body() or b"{}"))
+
+    @app.get("/api/chart-config")
+    def chart_configs():
+        return workspace.list_chart_configs()
+
+    @app.get("/api/chart-config/{symbol}")
+    def chart_config_get(symbol: str):
+        cfg = workspace.get_chart_config(symbol)
+        return cfg if cfg is not None else {"layers": None}
+
+    @app.put("/api/chart-config/{symbol}")
+    def chart_config_put(symbol: str, data: dict = Body(...)):
+        return workspace.save_chart_config(symbol, data)
+
+    @app.post("/api/chart-config/{symbol}")
+    async def chart_config_beacon(symbol: str, request: Request):
+        import json as _json
+
+        return workspace.save_chart_config(symbol, _json.loads(await request.body() or b"{}"))
+
+    @app.delete("/api/chart-config/{symbol}")
+    def chart_config_delete(symbol: str):
+        return workspace.delete_chart_config(symbol)
 
     @app.post("/api/events/relay")
     def relay(request: Request, msg: dict = Body(...)):

@@ -18,7 +18,7 @@ MAX_PER_SYMBOL = 500
 def to_dict(r: AnnotationRow) -> dict:
     return {
         "id": r.id, "symbol": r.symbol, "interval": r.interval, "type": r.type, "points": r.points,
-        "text": r.text, "style": r.style, "author": r.author, "tag": r.tag, "visible": r.visible,
+        "text": r.text, "style": r.style, "author": r.author, "tag": r.tag, "layer": r.layer, "visible": r.visible,
         "created_at": r.created_at.isoformat() + "Z", "updated_at": r.updated_at.isoformat() + "Z",
     }
 
@@ -38,7 +38,8 @@ def create(symbol: str, items: list[AnnotationIn], author: str = "agent") -> lis
             iv = get_interval(a.interval).name if a.interval else None
             row = AnnotationRow(
                 id=uuid.uuid4().hex[:12], symbol=symbol, interval=iv, type=a.type, points=_points(a.points),
-                text=a.text, style=a.style.model_dump(exclude_none=True), author=author, tag=a.tag, visible=True,
+                text=a.text, style=a.style.model_dump(exclude_none=True), author=author, tag=a.tag,
+                layer=a.layer or ("agent" if author == "agent" else None), visible=True,
                 created_at=utcnow(), updated_at=utcnow(),
             )
             s.add(row)
@@ -92,6 +93,8 @@ def update(annotation_id: str, patch: AnnotationPatch) -> dict:
             r.interval = get_interval(patch.interval).name if patch.interval else None
         if patch.tag is not None:
             r.tag = patch.tag or None
+        if patch.layer is not None:
+            r.layer = patch.layer or None
         if patch.visible is not None:
             r.visible = patch.visible
         r.updated_at = utcnow()
@@ -117,9 +120,9 @@ def _move_linked_alerts(annotation_id: str, price: float | None) -> None:
 
 
 def delete_(ids: list[str] | None = None, symbol: str | None = None, tag: str | None = None,
-            author: str | None = None) -> dict:
-    if not any([ids, symbol, tag, author]):
-        raise ValueError("Specify ids, or a symbol/tag/author filter")
+            author: str | None = None, layer: str | None = None) -> dict:
+    if not any([ids, symbol, tag, author, layer]):
+        raise ValueError("Specify ids, or a symbol/tag/author/layer filter")
     q = select(AnnotationRow)
     if ids:
         q = q.where(AnnotationRow.id.in_(ids))
@@ -129,6 +132,9 @@ def delete_(ids: list[str] | None = None, symbol: str | None = None, tag: str | 
         q = q.where(AnnotationRow.tag == tag)
     if author:
         q = q.where(AnnotationRow.author == author)
+    if layer:
+        # the default layer is stored as NULL
+        q = q.where(AnnotationRow.layer.is_(None) if layer == "main" else AnnotationRow.layer == layer)
     with session_scope() as s:
         rows = s.execute(q).scalars().all()
         gone = [(r.id, r.symbol) for r in rows]

@@ -74,6 +74,7 @@ class AnnotationRow(Base):
     style: Mapped[dict] = mapped_column(JSON)
     author: Mapped[str] = mapped_column(String)
     tag: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    layer: Mapped[str | None] = mapped_column(String, nullable=True)  # chart layer id (None = default layer)
     visible: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow)
@@ -192,8 +193,25 @@ def init_db(url: str | None = None) -> Engine:
             _engine.dispose()
         _engine = _make_engine(url)
         Base.metadata.create_all(_engine)
+        _migrate(_engine)
         _session_factory = sessionmaker(_engine, expire_on_commit=False)
         return _engine
+
+
+def _migrate(engine: Engine) -> None:
+    """Add columns introduced after a table was first created (create_all never alters tables).
+    Only additive, nullable columns, so existing data stays valid."""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if not insp.has_table(table.name):
+                continue
+            existing = {c["name"] for c in insp.get_columns(table.name)}
+            for col in table.columns:
+                if col.name not in existing and col.nullable:
+                    conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {col.type.compile(engine.dialect)}'))
 
 
 @contextmanager

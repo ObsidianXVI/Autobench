@@ -225,3 +225,68 @@ def set_ui_state(data: dict) -> dict:
     _check_size(data)
     db.state_set("ui_state", data)
     return {"ok": True}
+
+
+# --- per-symbol chart configuration (layers) ------------------------------------------------
+# The UI keeps one configuration per symbol: an ordered list of layers, each holding the price
+# chart, volume, indicators and other symbols' series. "_default" is the template for symbols
+# that have never been opened.
+
+DEFAULT_CHART_KEY = "_default"
+
+
+def _chart_key(symbol: str) -> str:
+    return "chartcfg:" + (DEFAULT_CHART_KEY if symbol == DEFAULT_CHART_KEY else normalize_symbol(symbol))
+
+
+def get_chart_config(symbol: str) -> dict | None:
+    return db.state_get(_chart_key(symbol), None)
+
+
+def save_chart_config(symbol: str, data: dict) -> dict:
+    if not isinstance(data.get("layers"), list):
+        raise ValueError("chart config needs a 'layers' list")
+    _check_size(data)
+    data = {**data, "updated_at": utcnow().isoformat() + "Z"}
+    db.state_set(_chart_key(symbol), data)
+    return data
+
+
+def delete_chart_config(symbol: str) -> dict:
+    with session_scope() as s:
+        row = s.get(db.StateRow, _chart_key(symbol))
+        if row is None:
+            raise KeyError(f"No saved chart configuration for {symbol}")
+        s.delete(row)
+    return {"deleted": symbol}
+
+
+def list_chart_configs() -> list[str]:
+    with session_scope() as s:
+        keys = s.scalars(select(db.StateRow.key).where(db.StateRow.key.like("chartcfg:%"))).all()
+    return sorted(k.split(":", 1)[1] for k in keys)
+
+
+def layers_summary(symbol: str) -> list[dict] | None:
+    """Compact description of what the user has on a symbol's chart (for the agent)."""
+    cfg = get_chart_config(symbol)
+    if not cfg:
+        return None
+    out = []
+    for layer in cfg.get("layers", []):
+        items = []
+        for it in layer.get("items", []):
+            kind = it.get("kind")
+            if kind == "indicator":
+                label = it.get("name", "") + ("(" + ",".join(str(v) for v in (it.get("params") or {}).values()) + ")"
+                                             if it.get("params") else "")
+            elif kind == "compare":
+                label = f"{it.get('symbol')} ({it.get('display', 'overlay')})"
+            elif kind == "price":
+                label = f"price ({it.get('chartType', 'candles')})"
+            else:
+                label = kind or "?"
+            items.append({"kind": kind, "label": label, "visible": it.get("visible", True)})
+        out.append({"id": layer.get("id"), "name": layer.get("name"), "visible": layer.get("visible", True),
+                    "items": items})
+    return out

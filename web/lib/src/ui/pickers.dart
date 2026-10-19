@@ -15,7 +15,10 @@ import 'store.dart';
 
 const _recentKey = 'autobench.recentSymbols';
 
+/// Recently opened symbols (a synced preference; older versions kept them in localStorage only).
 List<String> recentSymbols() {
+  final synced = store.prefList('recentSymbols');
+  if (synced.isNotEmpty) return synced;
   try {
     final raw = window.localStorage.getItem(_recentKey);
     if (raw == null) return [];
@@ -26,10 +29,7 @@ List<String> recentSymbols() {
 }
 
 void rememberSymbol(String s) {
-  try {
-    final list = [s, ...recentSymbols().where((x) => x != s)].take(12).toList();
-    window.localStorage.setItem(_recentKey, jsonEncode(list));
-  } catch (_) {}
+  store.setPref('recentSymbols', [s, ...recentSymbols().where((x) => x != s)].take(12).toList());
 }
 
 /// Opens the symbol search. [initial] pre-fills the query (the key the user started typing).
