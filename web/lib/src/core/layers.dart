@@ -16,6 +16,32 @@ import 'models.dart';
 
 enum ItemKind { price, volume, indicator, compare }
 
+/// How one output line of an indicator is drawn. Unset fields fall back to the automatic look.
+class OutputStyle {
+  String? color;
+  double? width;
+  String? line; // solid | dashed | dotted
+  String? plot; // line | histogram | dots
+  bool visible;
+
+  OutputStyle({this.color, this.width, this.line, this.plot, this.visible = true});
+
+  bool get isDefault => color == null && width == null && line == null && plot == null && visible;
+
+  OutputStyle copy() => OutputStyle(color: color, width: width, line: line, plot: plot, visible: visible);
+
+  Map<String, Object?> toJson() => {
+        if (color != null) 'color': color,
+        if (width != null) 'width': width,
+        if (line != null) 'line': line,
+        if (plot != null) 'plot': plot,
+        if (!visible) 'visible': false,
+      };
+
+  factory OutputStyle.fromJson(J j) =>
+      OutputStyle(color: j['color'].s, width: j['width'].d, line: j['line'].s, plot: j['plot'].s, visible: j['visible'].b ?? true);
+}
+
 /// Where an item is drawn: the main price pane, its own new pane, or the pane of another item.
 /// 'auto' = main pane for overlay indicators, a new pane for oscillators.
 const placements = ['auto', 'main', 'new'];
@@ -31,6 +57,8 @@ class LayerItem {
   // indicator
   String name;
   Map<String, Object> params;
+  Map<String, OutputStyle> styles; // per output
+  List<double>? levels; // reference lines (null = the indicator's own)
   // compare
   String symbol;
   String display; // line | area | candles (own pane); overlays are always lines
@@ -44,9 +72,15 @@ class LayerItem {
     this.chartType = 'candles',
     this.name = '',
     Map<String, Object>? params,
+    Map<String, OutputStyle>? styles,
+    this.levels,
     this.symbol = '',
     this.display = 'line',
-  }) : params = params ?? {};
+  })  : params = params ?? {},
+        styles = styles ?? {};
+
+  /// The style of [output], created on demand.
+  OutputStyle style(String output) => styles.putIfAbsent(output, OutputStyle.new);
 
   factory LayerItem.price({String id = 'price', String chartType = 'candles'}) =>
       LayerItem(id: id, kind: ItemKind.price, chartType: chartType, pane: 'main');
@@ -74,6 +108,9 @@ class LayerItem {
         if (kind == ItemKind.price) 'chartType': chartType,
         if (kind == ItemKind.indicator) 'name': name,
         if (kind == ItemKind.indicator) 'params': params,
+        if (kind == ItemKind.indicator && styles.values.any((x) => !x.isDefault))
+          'styles': {for (final e in styles.entries) if (!e.value.isDefault) e.key: e.value.toJson()},
+        if (kind == ItemKind.indicator && levels != null) 'levels': levels,
         if (kind == ItemKind.compare) 'symbol': symbol,
         if (kind == ItemKind.compare) 'display': display,
       };
@@ -92,6 +129,8 @@ class LayerItem {
         for (final e in j['params'].map.entries)
           if (e.value.v is num || e.value.v is String) e.key: e.value.v!,
       },
+      styles: {for (final e in j['styles'].map.entries) e.key: OutputStyle.fromJson(e.value)},
+      levels: j['levels'].v is List ? [for (final l in j['levels'].list) ?l.d] : null,
       symbol: j['symbol'].s ?? '',
       display: j['display'].s ?? 'line',
     );

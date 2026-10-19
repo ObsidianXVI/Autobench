@@ -364,7 +364,7 @@ class LayersPanel {
         _edit((c) => c.activeLayer = l.id, 'Activate ${l.name}');
         openIndicatorPicker(
             current: [for (final (_, r) in cfg.indicatorItems) r],
-            onAdd: (r) => _edit((c) => c.addItem(LayerItem.indicator(newId('i'), r.name, Map.of(r.params)), layerId: l.id),
+            onAdd: (r) => _edit((c) => c.addItem(store.newIndicator(newId('i'), r), layerId: l.id),
                 'Add ${r.name}'));
       }),
       MenuItem('Add symbol…', iconName: 'compare', onSelect: () => openSymbolSearch(title: 'Add a symbol to ${l.name}', onPick: (s) {

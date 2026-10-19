@@ -87,7 +87,10 @@ class IndicatorSpec {
   final String name, title, category, description;
   final bool overlay;
   final Map<String, Object?> params;
-  const IndicatorSpec(this.name, this.title, this.category, this.description, this.overlay, this.params);
+  final List<String> outputs;
+  final List<double> levels;
+  const IndicatorSpec(this.name, this.title, this.category, this.description, this.overlay, this.params,
+      [this.outputs = const [], this.levels = const []]);
 
   factory IndicatorSpec.fromJson(J j) => IndicatorSpec(
         j['name'].s ?? '',
@@ -96,6 +99,8 @@ class IndicatorSpec {
         j['description'].s ?? '',
         j['overlay'].b ?? false,
         {for (final e in j['params'].map.entries) e.key: e.value.v},
+        [for (final o in j['outputs'].list) ?o.s],
+        [for (final l in j['levels'].list) ?l.d],
       );
 }
 

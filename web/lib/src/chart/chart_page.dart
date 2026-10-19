@@ -258,7 +258,7 @@ class ChartPage {
     if (cfg == null) return;
     openIndicatorPicker(
         current: [for (final (_, r) in cfg.indicatorItemsAt(store.activeChart.interval.value)) r],
-        onAdd: (r) => _editCfg((c) => c.addItem(LayerItem.indicator(newId('i'), r.name, Map.of(r.params))), 'Add ${r.name}'));
+        onAdd: (r) => _editCfg((c) => c.addItem(store.newIndicator(newId('i'), r)), 'Add ${r.name}'));
   }
 
   void _gridMenu(Element anchor) {

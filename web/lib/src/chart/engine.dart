@@ -37,6 +37,7 @@ class Series {
   final String color;
   final double width;
   final bool dashed;
+  final bool dotted;
   final bool lastValueLabel;
   final List<double> levels; // dotted reference lines (e.g. RSI 30/70)
   final List<Bar?>? ohlc; // for candles (another symbol's bars aligned to ours)
@@ -49,6 +50,7 @@ class Series {
     this.color = '#94a3b8',
     this.width = 1,
     this.dashed = false,
+    this.dotted = false,
     this.lastValueLabel = false,
     this.levels = const [],
     this.ohlc,
@@ -646,7 +648,7 @@ class ChartEngine {
         case SeriesKind.histogram:
           _drawHistogram(ctx, s, p, from, to);
         case SeriesKind.line:
-          _drawLine(ctx, s.values, s.color, s.width, s.dashed, p, from, to);
+          _drawLine(ctx, s.values, s.color, s.width, s.dashed, p, from, to, dotted: s.dotted);
         case SeriesKind.dots:
           _drawDots(ctx, s, p, from, to);
         case SeriesKind.volume:
@@ -822,11 +824,11 @@ class ChartEngine {
   }
 
   void _drawLine(CanvasRenderingContext2D ctx, List<double?> values, String color, double width, bool dashed,
-      _Pane p, int from, int to) {
+      _Pane p, int from, int to, {bool dotted = false}) {
     ctx.strokeStyle = color.toJS;
     ctx.lineWidth = width;
     ctx.lineJoin = 'round';
-    _dash(ctx, dashed ? const [6, 4] : const []);
+    _dash(ctx, dotted ? [width, width * 2.5 + 1] : dashed ? const [6, 4] : const []);
     ctx.beginPath();
     var pen = false;
     final lo = math.max(0, from - 1), hi = math.min(values.length - 1, to + 1);

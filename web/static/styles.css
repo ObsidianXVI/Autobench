@@ -263,8 +263,12 @@ textarea.input { resize: vertical; min-height: 70px; }
 .ind-row.dim { opacity: .5; }
 .ind-name { color: var(--text-muted); }
 .ind-val { font-variant-numeric: tabular-nums; }
-.ind-actions { display: none; gap: 1px; }
-.ind-row:hover .ind-actions { display: inline-flex; }
+/* legend actions: always laid out (no shift), revealed on hover and kept ~0.4s after the pointer leaves so it
+   can cross the gaps between name, values and buttons (the legend itself ignores the pointer) */
+.ind-actions { display: inline-flex; gap: 1px; visibility: hidden; opacity: 0;
+  transition: opacity .15s ease .3s, visibility 0s linear .45s; }
+.ind-row:hover .ind-actions, .legend-main:hover .ind-actions, .ind-actions:focus-within {
+  visibility: visible; opacity: 1; transition: opacity .1s ease 0s, visibility 0s linear 0s; }
 .ind-row:hover { background: color-mix(in srgb, var(--chart-bg) 80%, transparent); border-radius: 4px; }
 .pane-legends { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
 .pane-legend { position: absolute; left: 8px; right: 90px; }
@@ -782,3 +786,21 @@ button.panel-title:hover { background: var(--hover); }
 .tf-chip.priced { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); background: var(--accent-soft); }
 .tf-chip:hover { filter: brightness(1.08); }
 .layer-head.off-tf .layer-name, .layer:has(> .layer-head.off-tf) .layer-row { opacity: 0.5; }
+
+/* indicator settings */
+.ind-section { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--text-muted);
+  border-bottom: 1px solid var(--border); padding-bottom: 4px; margin-bottom: -4px; }
+.ind-params { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px 10px; }
+.ind-styles { display: grid; gap: 6px; }
+.ind-style-row { display: grid; grid-template-columns: auto minmax(70px, 1fr) auto 78px 92px 100px; align-items: center; gap: 8px; }
+.ind-style-row .input.select { height: 28px; padding-top: 0; padding-bottom: 0; font-size: 12px; }
+.ind-style-row.head { font-size: 11px; color: var(--text-muted); }
+.ind-style-name { font-size: 12.5px; text-transform: capitalize; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.color-wrap { display: inline-flex; align-items: center; gap: 2px; }
+.color-input { width: 30px; height: 24px; padding: 0; border: 1px solid var(--border-strong); border-radius: 5px; background: none; cursor: pointer; }
+.color-input::-webkit-color-swatch-wrapper { padding: 2px; }
+.color-input::-webkit-color-swatch { border: 0; border-radius: 3px; }
+@media (max-width: 560px) {
+  .ind-style-row { grid-template-columns: auto 1fr auto; }
+  .ind-style-row .input.select { grid-column: span 1; }
+}

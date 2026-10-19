@@ -64,6 +64,10 @@ part of the codebase, and its only dependency is `package:web`. For UI developme
   renamed, duplicated, reordered and deleted, and rows dragged between them in the Layers panel. New
   items and drawings go to the active layer; the agent's drawings go to an "Agent" layer. "Save as
   default" makes a symbol's layers the template for symbols you have not set up yet.
+- **Indicator settings**: typed inputs (numbers, price source), and per output line its color, width,
+  solid/dashed/dotted, line/histogram/dots and visibility, plus custom levels (e.g. RSI 80/20). What you
+  apply is kept on that indicator for the symbol and becomes your default for every new instance of it
+  (*Built-in defaults* resets both).
 - **A setup per timeframe**: give any layer its own price chart at an interval (layer ⋯ → *Add price
   chart*), e.g. a *Daily* layer with SMA 50/200 and an *Entry* layer at 30m with VWAP and RSI. The chart
   shows the layer for its interval (or the untied default), so switching the interval switches the

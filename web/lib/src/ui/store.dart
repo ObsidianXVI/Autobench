@@ -111,6 +111,8 @@ const prefDefaults = <String, Object?>{
   'trade.targetR': 2.0,
   'trading.tab': 'positions',
   'trading.equityDays': 90,
+  // indicator name -> {params, styles, levels}: the last settings applied to it, used for new instances
+  'ind.defaults': <String, Object?>{},
 };
 
 class Store {
@@ -203,6 +205,46 @@ class Store {
     if (prefs.value[key] == value) return;
     prefs.value = {...prefs.value, key: value};
     save();
+  }
+
+  // ---------------------------------------------------------------- indicator defaults
+
+  /// What the user last applied to an indicator (params that differ from the built-in ones, per-output
+  /// styles, levels). Every new instance of that indicator, on any symbol, starts from it.
+  J indicatorDefaults(String name) => J(pref<Map<String, Object?>>('ind.defaults'))[name];
+
+  void rememberIndicator(LayerItem item) {
+    final all = Map<String, Object?>.of(pref<Map<String, Object?>>('ind.defaults'));
+    final style = {for (final e in item.styles.entries) if (!e.value.isDefault) e.key: e.value.toJson()};
+    all[item.name] = {
+      'params': Map<String, Object?>.of(item.params),
+      if (style.isNotEmpty) 'styles': style,
+      if (item.levels != null) 'levels': item.levels,
+    };
+    setPref('ind.defaults', all);
+  }
+
+  void forgetIndicator(String name) {
+    final all = Map<String, Object?>.of(pref<Map<String, Object?>>('ind.defaults'))..remove(name);
+    setPref('ind.defaults', all);
+  }
+
+  /// A new indicator item from the user's remembered defaults; values in [r] that differ from the
+  /// built-in defaults (an explicit choice) win over remembered ones.
+  LayerItem newIndicator(String id, IndicatorRef r) {
+    final factory = specs.value.where((x) => x.name == r.name).firstOrNull?.params ?? const {};
+    final d = indicatorDefaults(r.name);
+    final params = <String, Object>{
+      for (final e in d['params'].map.entries)
+        if (e.value.v is num || e.value.v is String) e.key: e.value.v!,
+    };
+    for (final e in r.params.entries) {
+      if (factory[e.key] != e.value) params[e.key] = e.value;
+    }
+    params.removeWhere((k, v) => factory[k] == v);
+    return LayerItem.indicator(id, r.name, params)
+      ..styles.addAll({for (final e in d['styles'].map.entries) e.key: OutputStyle.fromJson(e.value)})
+      ..levels = d['levels'].v is List ? [for (final l in d['levels'].list) ?l.d] : null;
   }
 
   // ---------------------------------------------------------------- drawings

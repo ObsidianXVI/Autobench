@@ -306,6 +306,28 @@ Future<void> main() async {
     check('unknown drawing layer falls back to main', withDrawings.layerOfDrawing('nope', 'user').id, mainLayerId);
   });
 
+  group('indicator styles', () {
+    final it = LayerItem.indicator('m', 'macd', {'fast': 8})
+      ..levels = [0, 1.5];
+    it.style('macd').color = '#ff0000';
+    it.style('signal')
+      ..line = 'dotted'
+      ..width = 2;
+    it.style('histogram').visible = false;
+    it.style('unused'); // default styles are not stored
+    final j = it.toJson();
+    check('styles stored sparsely', (j['styles'] as Map).keys.toList(), ['macd', 'signal', 'histogram']);
+    final back = LayerItem.fromJson(J(j));
+    check('styles round trip', [
+      back.styles['macd']!.color, back.styles['signal']!.line, back.styles['signal']!.width, back.styles['histogram']!.visible,
+      back.levels, back.params['fast'],
+    ], ['#ff0000', 'dotted', 2.0, false, [0.0, 1.5], 8]);
+    check('no styles, no keys', LayerItem.indicator('r', 'rsi').toJson().containsKey('styles'), false);
+    final copy = back.styles['signal']!.copy()..width = 3;
+    check('copy is independent', back.styles['signal']!.width, 2.0);
+    check('copy keeps fields', [copy.line, copy.width], ['dotted', 3.0]);
+  });
+
   group('layer timeframes', () {
     bool isOv(String n) => n == 'vwap' || n == 'sma';
     final c = SymbolConfig.builtin(); // Main: price, volume, sma50, sma200, rsi (untied)

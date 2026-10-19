@@ -33,6 +33,16 @@ const drawColors = ['#38bdf8', '#a78bfa', '#22c55e', '#ef4444', '#f59e0b', '#e2e
 const _hiddenOverlayOutputs = {'bandwidth', 'percent_b', 'direction', 'slope_pct', 'r2'};
 const _histogramOutputs = {'histogram', 'momentum', 'squeeze_on'};
 
+/// The automatic look of an indicator output (used unless the user styled it).
+String autoPlot(String indicator, String output, bool ownPane) =>
+    ownPane && _histogramOutputs.contains(output) ? 'histogram' : indicator == 'psar' ? 'dots' : 'line';
+String autoLine(String output) => output == 'middle' || output == 'signal' ? 'dashed' : 'solid';
+double autoWidth(bool ownPane) => ownPane ? 1.8 : 1.4;
+
+/// Outputs an indicator draws (the rest are values for the agent, e.g. Bollinger %B).
+bool drawnOutput(String output, bool overlay) =>
+    !(overlay && _hiddenOverlayOutputs.contains(output)) && !(!overlay && output == 'direction');
+
 /// Points a tool needs before it is committed (default 2).
 const toolPoints = {
   'horizontal_line': 1, 'horizontal_ray': 1, 'vertical_line': 1, 'text': 1, 'marker': 1, 'trendline': 2, 'ray': 2,
@@ -422,19 +432,25 @@ class ChartPanel {
           for (final out in d.outputs) {
             if (d.overlay && _hiddenOverlayOutputs.contains(out)) continue;
             if (!d.overlay && out == 'direction') continue;
+            final st = item.styles[out];
+            final auto = palette[colorIdx++ % palette.length]; // consumed either way so autos stay stable
+            if (st != null && !st.visible) continue;
             final vals = d.values[out] ?? const [];
-            final color = first && item.color != null ? item.color! : palette[colorIdx++ % palette.length];
-            final hist = pane > 0 && _histogramOutputs.contains(out);
+            final color = st?.color ?? (first && item.color != null ? item.color! : auto);
+            final plot = st?.plot ?? autoPlot(item.name, out, pane > 0);
+            final hist = plot == 'histogram';
+            final line = st?.line ?? autoLine(out);
             series.add(Series(
               id: item.id,
               pane: pane,
-              kind: hist ? SeriesKind.histogram : item.name == 'psar' ? SeriesKind.dots : SeriesKind.line,
+              kind: hist ? SeriesKind.histogram : plot == 'dots' ? SeriesKind.dots : SeriesKind.line,
               values: vals,
               color: color,
-              width: pane == 0 ? 1.4 : 1.8,
-              dashed: out == 'middle' || out == 'signal',
+              width: st?.width ?? autoWidth(pane > 0),
+              dashed: line == 'dashed',
+              dotted: line == 'dotted',
               lastValueLabel: pane > 0 && !hist,
-              levels: first && pane > 0 ? d.levels : const [],
+              levels: first && pane > 0 ? (item.levels ?? d.levels) : const [],
             ));
             first = false;
             outs.add((out, color, vals));
@@ -1334,7 +1350,7 @@ class ChartPanel {
             'click': (_) => store.editConfig(symbol, (c) => c.find(r.key)?.$2.visible = false, label: 'Hide ${r.label}'),
           }),
           h('button.legend-x', icon('settings', size: 13), {'type': 'button', 'aria-label': 'Settings for ${r.label}'},
-              {'click': (_) => editLayerItem(symbol, r.key)}),
+              {'click': (_) => editLayerItem(symbol, r.key, colors: {for (final (o, col, _) in r.outputs) o: col})}),
           h('button.legend-x', icon('x', size: 13), {'type': 'button', 'aria-label': 'Remove ${r.label}'}, {
             'click': (_) => store.editConfig(symbol, (c) => c.removeItem(r.key), label: 'Remove ${r.label}'),
           }),
@@ -1473,15 +1489,20 @@ Future<void> showAlertDialog(String symbol, {double? price, String? annotationId
 
 /// Settings for one layer item: chart type (price), parameters and color (indicators), placement
 /// (main pane / own pane / with another item), display (other symbols), and its layer.
-Future<void> editLayerItem(String symbol, String itemId) async {
+const _sources = ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'volume'];
+
+/// Settings for a layer item. Indicators get typed inputs, a style row per output (visibility, color,
+/// width, line style, plot type) and editable levels; applying also makes those the defaults for new
+/// instances of the indicator. [colors] are the colors currently drawn per output (for "auto").
+Future<void> editLayerItem(String symbol, String itemId, {Map<String, String> colors = const {}}) async {
   final cfg = store.configNow(symbol);
   final found = cfg?.find(itemId);
   if (cfg == null || found == null) return;
   final (curLayer, item) = found;
   final spec = item.kind == ItemKind.indicator ? store.specs.value.where((s) => s.name == item.name).firstOrNull : null;
-  final inputs = <String, HTMLInputElement>{};
-  HTMLSelectElement sel(List<(String, String)> opts, String value) {
-    final e = h('select.input.select', [for (final (v, l) in opts) h('option', l, {'value': v})]) as HTMLSelectElement;
+  HTMLSelectElement sel(List<(String, String)> opts, String value, [String? label]) {
+    final e = h('select.input.select', [for (final (v, l) in opts) h('option', l, {'value': v})],
+        {'aria-label': ?label}) as HTMLSelectElement;
     e.value = value;
     return e;
   }
@@ -1521,35 +1542,119 @@ Future<void> editLayerItem(String symbol, String itemId) async {
   }
 
   renderSwatches();
+
+  // ---- indicator inputs
+  final inputs = <String, HTMLElement>{};
+  HTMLElement paramInput(String key, Object? factory, Object? value) {
+    final v = '${value ?? factory ?? ''}';
+    if (key == 'source') return sel([for (final x in _sources) (x, x)], v, key);
+    if (factory is num) {
+      return h('input.input', null, {
+        'type': 'number', 'value': v, 'step': factory is int ? '1' : 'any', 'placeholder': '$factory', 'aria-label': key,
+      });
+    }
+    return h('input.input', null, {'value': v, 'placeholder': key == 'anchor' ? 'YYYY-MM-DD' : '${factory ?? ''}', 'aria-label': key});
+  }
+
+  String inputValue(HTMLElement e) => e is HTMLSelectElement ? e.value : (e as HTMLInputElement).value;
+  final paramGrid = h('div.ind-params');
+  void renderParams(Map<String, Object> values) {
+    inputs.clear();
+    replace(paramGrid, [
+      for (final e in spec?.params.entries ?? const <MapEntry<String, Object?>>[])
+        h('label.field-col', [h('span', e.key.replaceAll('_', ' ')), inputs[e.key] = paramInput(e.key, e.value, values[e.key])]),
+    ]);
+  }
+
+  // ---- indicator styles, one row per drawn output
+  final outputs = [for (final o in spec?.outputs ?? const <String>[]) if (drawnOutput(o, spec!.overlay)) o];
+  final ownPane = !(spec?.overlay ?? true);
+  var styles = {for (final o in outputs) o: item.styles[o]?.copy() ?? OutputStyle()};
+  if (item.color != null && outputs.isNotEmpty) styles[outputs.first]!.color ??= item.color; // legacy single color
+  final styleGrid = h('div.ind-styles');
+  void renderStyles() {
+    replace(styleGrid, [
+      h('div.ind-style-row.head', [
+        h('span', null), h('span', 'Output'), h('span', 'Color'), h('span', 'Width'), h('span', 'Line'),
+        if (ownPane) h('span', 'Plot'),
+      ]),
+      for (final (i, o) in outputs.indexed) () {
+        final st = styles[o]!;
+        final shown = st.color ?? colors[o] ?? palette[i % palette.length];
+        final vis = h('input', null, {'type': 'checkbox', 'aria-label': 'Show $o'}) as HTMLInputElement..checked = st.visible;
+        vis.addEventListener('change', ((Event _) => st.visible = vis.checked).toJS);
+        final pick = h('input.color-input', null, {'type': 'color', 'value': shown, 'aria-label': '$o color'}) as HTMLInputElement;
+        pick.addEventListener('input', ((Event _) => st.color = pick.value).toJS);
+        final width = sel([('', 'Auto'), for (final w in ['1', '1.5', '2', '2.5', '3', '4']) (w, '${w}px')],
+            st.width == null ? '' : (st.width! % 1 == 0 ? '${st.width!.toInt()}' : '${st.width}'), '$o width');
+        width.addEventListener('change', ((Event _) => st.width = double.tryParse(width.value)).toJS);
+        final line = sel([('', 'Auto'), ('solid', 'Solid'), ('dashed', 'Dashed'), ('dotted', 'Dotted')], st.line ?? '', '$o line style');
+        line.addEventListener('change', ((Event _) => st.line = line.value.isEmpty ? null : line.value).toJS);
+        final plot = sel([('', 'Auto'), ('line', 'Line'), ('histogram', 'Histogram'), ('dots', 'Dots')], st.plot ?? '', '$o plot');
+        plot.addEventListener('change', ((Event _) => st.plot = plot.value.isEmpty ? null : plot.value).toJS);
+        return h('div.ind-style-row', [
+          vis,
+          h('span.ind-style-name', o.replaceAll('_', ' ')),
+          h('span.color-wrap', [
+            pick,
+            if (st.color != null)
+              h('button.legend-x', icon('x', size: 12), {'type': 'button', 'data-tip': 'Automatic color', 'aria-label': 'Automatic $o color'}, {
+                'click': (_) {
+                  st.color = null;
+                  renderStyles();
+                },
+              }),
+          ]),
+          width,
+          line,
+          if (ownPane) plot,
+        ]);
+      }(),
+    ]);
+  }
+
+  final hasLevels = spec != null && (spec.levels.isNotEmpty || ownPane);
+  String levelsText(List<double>? l) => (l ?? spec?.levels ?? const []).map((v) => v % 1 == 0 ? '${v.toInt()}' : '$v').join(', ');
+  final levels = h('input.input', null, {
+    'value': levelsText(item.levels), 'placeholder': spec?.levels.isEmpty ?? true ? 'e.g. 0' : levelsText(null), 'aria-label': 'Levels',
+  }) as HTMLInputElement;
+
+  void fill(Map<String, Object> params, Map<String, OutputStyle> st, List<double>? lv) {
+    renderParams(params);
+    styles = {for (final o in outputs) o: st[o]?.copy() ?? OutputStyle()};
+    renderStyles();
+    levels.value = levelsText(lv);
+  }
+
+  if (spec != null) fill(item.params, styles, item.levels);
   final title = switch (item.kind) {
     ItemKind.price => '$symbol price chart',
     ItemKind.volume => 'Volume',
     ItemKind.indicator => spec?.title ?? item.name,
     ItemKind.compare => item.symbol,
   };
+  final remembered = spec != null && store.indicatorDefaults(spec.name).v != null;
   Dialog.open('$title settings', h('div.form-grid', [
     if (spec != null) h('div.muted.small', spec.description),
     if (item.kind == ItemKind.price) h('label.field-col', [h('span', 'Chart type'), typeSel]),
-    if (spec != null)
-      for (final e in spec.params.entries)
-        h('label.field-col', [
-          h('span', e.key),
-          inputs[e.key] = h('input.input', null, {'value': '${item.params[e.key] ?? e.value ?? ''}'}) as HTMLInputElement,
-        ]),
+    if (spec != null && spec.params.isNotEmpty) ...[h('div.ind-section', 'Inputs'), paramGrid],
+    if (outputs.isNotEmpty) ...[h('div.ind-section', 'Style'), styleGrid],
+    if (hasLevels) h('label.field-col', [h('span', 'Levels (comma-separated, empty = none)'), levels]),
     if (item.kind == ItemKind.compare) h('label.field-col', [h('span', 'Display in its own pane as'), displaySel]),
     if (item.kind != ItemKind.price) h('label.field-col', [h('span', 'Pane'), paneSel]),
-    if (item.kind == ItemKind.indicator || item.kind == ItemKind.compare) h('div.field-col', [h('span', 'Color'), swatches]),
+    if (item.kind == ItemKind.compare) h('div.field-col', [h('span', 'Color'), swatches]),
     h('label.field-col', [h('span', 'Layer'), layerSel]),
-  ]), actions: [
     if (spec != null)
-      DialogAction('Defaults', onPressed: () {
-        for (final e in spec.params.entries) {
-          inputs[e.key]!.value = '${e.value ?? ''}';
-        }
+      h('div.muted.tiny', 'Applying also makes these the defaults for every new ${spec.title} (any symbol).'),
+  ]), width: spec != null ? '560px' : '420px', actions: [
+    if (spec != null)
+      DialogAction(remembered ? 'Built-in defaults' : 'Defaults', onPressed: () {
+        fill(const {}, const {}, null);
         return false;
       }),
     const DialogAction('Cancel'),
     DialogAction('Apply', primary: true, onPressed: () {
+      LayerItem? applied;
       store.editConfig(symbol, (c) {
         final it = c.find(itemId)?.$2;
         if (it == null) return;
@@ -1557,19 +1662,34 @@ Future<void> editLayerItem(String symbol, String itemId) async {
         if (spec != null) {
           final p = <String, Object>{};
           for (final e in spec.params.entries) {
-            final raw = inputs[e.key]!.value.trim();
+            final raw = inputValue(inputs[e.key]!).trim();
             if (raw.isEmpty || raw == '${e.value}') continue;
-            p[e.key] = e.value is num ? (num.tryParse(raw) ?? e.value!) : raw;
+            final v = e.value is num ? (num.tryParse(raw) ?? e.value!) : raw;
+            if (v == e.value) continue;
+            p[e.key] = e.value is int && v is num ? v.round() : v;
           }
           it.params
             ..clear()
             ..addAll(p);
+          it.styles
+            ..clear()
+            ..addAll({for (final e in styles.entries) if (!e.value.isDefault) e.key: e.value});
+          it.color = null; // replaced by per-output styles
+          if (hasLevels) {
+            final parsed = [for (final x in levels.value.split(',')) ?double.tryParse(x.trim())];
+            final def = spec.levels;
+            it.levels = parsed.length == def.length && [for (var i = 0; i < def.length; i++) parsed[i] == def[i]].every((b) => b)
+                ? null
+                : parsed;
+          }
+          applied = it;
         }
         if (it.kind == ItemKind.compare) it.display = displaySel.value;
         if (it.kind != ItemKind.price) it.pane = paneSel.value;
-        if (it.kind == ItemKind.indicator || it.kind == ItemKind.compare) it.color = color;
+        if (it.kind == ItemKind.compare) it.color = color;
         if (layerSel.value != c.find(itemId)!.$1.id) c.moveItem(itemId, layerSel.value);
       }, label: 'Edit $title');
+      if (applied != null) store.rememberIndicator(applied!);
       return true;
     }),
   ]);

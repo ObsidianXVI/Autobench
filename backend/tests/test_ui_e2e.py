@@ -493,6 +493,54 @@ def test_layer_with_its_own_chart_per_interval(page, server):
     page.click(".tb.iv:text-is('1D')")  # leave the shared server on 1D
 
 
+def _rsi_items(page):
+    return [i for l in _layers(page) for i in l["items"] if i.get("name") == "rsi"]
+
+
+def test_indicator_styles_and_remembered_defaults(page, server):
+    page.wait_for_selector(".ind-row:has-text('rsi')")
+    row = page.locator(".ind-row:has-text('rsi')").first
+    name = row.locator(".ind-name").bounding_box()
+    val = row.locator(".ind-val").first.bounding_box()
+    # hover the name, rest the pointer in the gap before the value, then reach for the gear
+    page.mouse.move(name["x"] + 5, name["y"] + name["height"] / 2)
+    page.mouse.move((name["x"] + name["width"] + val["x"]) / 2, name["y"] + name["height"] / 2)
+    page.wait_for_timeout(150)
+    gear = row.locator("button[aria-label^='Settings for']").bounding_box()
+    page.mouse.move(gear["x"] + gear["width"] / 2, gear["y"] + gear["height"] / 2, steps=8)
+    page.mouse.down()
+    page.mouse.up()
+    page.wait_for_selector(".dialog:has-text('Relative Strength Index settings')")
+    page.fill(".dialog input[aria-label='length']", "21")
+    page.fill(".dialog input[aria-label='rsi color']", "#ff0000")
+    page.select_option(".dialog select[aria-label='rsi width']", "3")
+    page.select_option(".dialog select[aria-label='rsi line style']", "dotted")
+    page.fill(".dialog input[aria-label='Levels']", "80, 20")
+    page.click(".dialog button:has-text('Apply')")
+    page.wait_for_selector(".ind-row:has-text('rsi(21)')")
+    rsi = _rsi_items(page)[0]
+    assert rsi["params"] == {"length": 21} and rsi["levels"] == [80, 20]
+    assert rsi["styles"] == {"rsi": {"color": "#ff0000", "width": 3, "line": "dotted"}}
+    # the settings become the default for every new RSI
+    page.wait_for_function("fetch('/api/ui-state').then(r => r.json()).then(s => s.prefs?.['ind.defaults']?.rsi?.params?.length === 21)")
+    page.mouse.click(400, 400)
+    page.keyboard.press("/")
+    page.fill(".ind-dialog input", "relative strength")
+    page.click(".ind-item >> nth=0")
+    page.keyboard.press("Escape")
+    page.wait_for_function("__autobench.panes() === 3")
+    new = _rsi_items(page)[1]
+    assert new["params"] == {"length": 21} and new["styles"]["rsi"]["color"] == "#ff0000" and new["levels"] == [80, 20]
+    # built-in defaults reset both the item and the remembered default
+    page.locator(".ind-row:has-text('rsi(21)')").last.locator('.ind-name').hover()
+    page.locator(".ind-row:has-text('rsi(21)')").last.locator("button[aria-label^='Settings for']").click()
+    page.click(".dialog button:has-text('Built-in defaults')")
+    assert page.input_value(".dialog input[aria-label='length']") == "14"
+    page.click(".dialog button:has-text('Apply')")
+    page.wait_for_function("fetch('/api/ui-state').then(r => r.json()).then(s => Object.keys(s.prefs?.['ind.defaults']?.rsi?.params ?? {x: 1}).length === 0)")
+    assert "styles" not in _rsi_items(page)[1] and "levels" not in _rsi_items(page)[1]
+
+
 def test_price_and_volume_hide_and_volume_in_own_pane(page):
     _open_layers(page)
     assert page.evaluate("__autobench.chart.active().showPrice()") is True
