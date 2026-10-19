@@ -105,6 +105,7 @@ class Universe:
         self.quotes = _Layer("quotes")
         self._lock = threading.Lock()
         self._refreshing: set[str] = set()
+        self._part_locks = {p: threading.Lock() for p in ("listings", "fundamentals", "bars", "quotes")}
         self._progress: dict[str, str] = {}
         self._table: tuple[tuple, pd.DataFrame] | None = None
         self._tech: tuple[float, pd.DataFrame] | None = None
@@ -131,9 +132,14 @@ class Universe:
 
     def _refresh_chain(self, parts: list[str]) -> None:
         for p in parts:
+            lock = self._part_locks[p]
+            if not lock.acquire(blocking=False):
+                # another thread is refreshing this layer: wait for it instead of starting a duplicate,
+                # so callers of ensure(wait=True) really get the refreshed data
+                with lock:
+                    pass
+                continue
             with self._lock:
-                if p in self._refreshing:
-                    continue
                 self._refreshing.add(p)
             try:
                 started = time.time()
@@ -146,6 +152,7 @@ class Universe:
                 with self._lock:
                     self._refreshing.discard(p)
                     self._progress.pop(p, None)
+                lock.release()
 
     def status(self) -> dict:
         out = {}

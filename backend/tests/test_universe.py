@@ -296,3 +296,32 @@ def test_period_list_includes_enough_history():
     assert annual == ["CY2025", "CY2024", "CY2023"]
     assert quarters[0] == "CY2023Q2" and quarters[-1] == "CY2026Q3"
     assert instants[0] == "CY2026Q3I"
+
+
+def test_ensure_wait_waits_for_a_refresh_already_running(monkeypatch):
+    """A caller asking to wait must not return while another thread is mid-refresh."""
+    import threading
+    import time
+
+    started, release = threading.Event(), threading.Event()
+    real = U.Universe._refresh_listings
+
+    def slow(self):
+        started.set()
+        release.wait(5)
+        real(self)
+
+    monkeypatch.setattr(U.Universe, "_refresh_listings", slow)
+    u = U.Universe()
+    t = threading.Thread(target=u._refresh_chain, args=(["listings"],))
+    t.start()
+    started.wait(5)
+    done = threading.Event()
+    waiter = threading.Thread(target=lambda: (u.ensure(["listings"], wait=True), done.set()))
+    waiter.start()
+    time.sleep(0.3)
+    assert not done.is_set()  # still waiting for the first refresh
+    release.set()
+    waiter.join(5)
+    t.join(5)
+    assert done.is_set() and u.listings.value is not None
