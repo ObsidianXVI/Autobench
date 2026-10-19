@@ -12,7 +12,7 @@ import 'kit/overlay.dart';
 import 'trading_state.dart';
 
 String statusBadge(String status) => switch (status) {
-      'filled' => 'badge.up',
+      'filled' || 'applied' => 'badge.up',
       'working' || 'partially_filled' || 'submitted' => 'badge.info',
       'pending' => 'badge.agent',
       'rejected' || 'error' || 'inactive' => 'badge.down',
@@ -51,6 +51,7 @@ HTMLElement checkView(J check, {bool compact = false}) {
 
 /// Review an agent proposal: rationale, a fresh risk check, approve or reject (with a reason).
 Future<void> reviewTicket(TTicket t) async {
+  if (t.isModify) return _reviewModify(t);
   final checkHost = h('div', h('div.muted.small', 'Re-checking against the account…'));
   late Dialog d;
   final body = h('div.ticket-review', [
@@ -106,6 +107,52 @@ Future<void> reviewTicket(TTicket t) async {
     }),
   ]);
   unawaited(recheck());
+  d.panel.classList.add('trade-dialog');
+}
+
+/// Review an agent's proposed change to a working order (e.g. trailing a stop).
+Future<void> _reviewModify(TTicket t) async {
+  final body = h('div.ticket-review', [
+    h('div.ticket-title', [
+      if (t.source == 'agent') h('span.badge-agent', '✦ AI'),
+      h('b', 'Change ${t.symbol} ${(t.spec['role'].s ?? 'order').replaceAll('_', ' ')}'),
+      h('span.muted', '${t.side.toUpperCase()} ${qtyText(t.qty)} ${t.orderType.replaceAll('_', ' ')} · order ${t.orderId}'),
+    ]),
+    if (trade.otherAccount(t))
+      h('div.check-msg.warn', 'Made for account ${t.account}. Switch to that account on the Trading page to approve it.'),
+    h('div.check-rows', [
+      for (final c in t.changeTexts) h('div.check-row', [h('b', c)]),
+      if (t.check['estimate']['market_price'].d != null)
+        h('div.check-row', [h('span.muted', 'Market at proposal'), h('span.spacer'), h('b', fmtPrice(t.check['estimate']['market_price'].d!))]),
+    ]),
+    for (final w in t.check['warnings'].list) h('div.check-msg.warn', [h('b', '! '), w.s ?? '']),
+    if (t.expiresAt != null) h('div.muted.small', 'expires ${_clock(t.expiresAt!)}'),
+    if ((t.rationale ?? '').isNotEmpty) h('div.ticket-rationale', markdown(t.rationale!)),
+  ]);
+  final d = Dialog.open('Review order change', body, width: '520px', actions: [
+    DialogAction('Reject…', onPressed: () async {
+      final reason = await promptDialog('Reject proposal', label: 'Reason (the agent sees this)', initial: '', confirm: 'Reject');
+      if (reason == null) return false;
+      try {
+        await trade.reject(t.id, reason.isEmpty ? null : reason);
+        toast('Proposal rejected', ms: 2500);
+        return true;
+      } catch (e) {
+        toast('$e', kind: 'error');
+        return false;
+      }
+    }),
+    DialogAction('Approve change', primary: true, onPressed: () async {
+      try {
+        await trade.approve(t.id);
+        toast(t.changeTexts.join(', '), title: 'Order changed', kind: 'success', ms: 4000);
+        return true;
+      } catch (e) {
+        toast('$e', kind: 'error', ms: 8000);
+        return false;
+      }
+    }),
+  ]);
   d.panel.classList.add('trade-dialog');
 }
 

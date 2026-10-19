@@ -138,6 +138,13 @@ What you get:
   their P&L and R. Right-click for *Trade at price* (buy/sell limit or stop) and position actions
   (close, close half, add or move the stop, breakeven). A long/short position drawing becomes an
   order with *Create order from this*.
+- **Journal page**: every round-trip trade of the selected account with its outcome (P&L, return, R,
+  holding time), the best and worst price while in it and how much of that move the exit kept, what
+  price did 1, 5 and 20 sessions after the exit ("+$120 if held" / "saved $80"), and what other exits
+  would have made (planned stop or target, best or worst price, holding longer), with a chart of the
+  trade and notes per trade. Also your chart drawings of the last 7/30/90 days, aggregate performance
+  (win rate, profit factor, expectancy, drawdown, streaks, exit efficiency, P&L by symbol, side, month,
+  weekday and agent vs. your own ideas) and your notes per symbol.
 - **Trading page**: net liquidation, day/unrealized/realized P&L, cash vs invested vs committed to
   orders vs free cash, open risk to stops, capital allocation, the equity curve, and tabs for
   positions, orders, agent proposals, trade history (round trips with R multiples, win rate, profit
@@ -169,7 +176,7 @@ Safety:
 - **stdio-only clients** (e.g. Claude Desktop): command `backend/.venv/bin/autobench`, args `["mcp-stdio"]`.
   Drawings are relayed to a running `autobench serve`, so the chart still updates live.
 
-## What the agent can do (69 MCP tools)
+## What the agent can do (84 MCP tools)
 
 | Area | Tools |
 |---|---|
@@ -178,12 +185,12 @@ Safety:
 | Quant | run_backtest (no look-ahead, costs, stops, OOS split, robustness), run_signal_study (forward returns vs baseline, t-stats), scan_symbols, evaluate_expression, get_risk_metrics, get_correlations, calculate_position_size |
 | Fundamentals | get_fundamentals, get_financial_statements, get_financial_history (SEC XBRL, 15y), get_earnings, get_analyst_ratings, get_ownership, compare_peers |
 | Research | get_news, get_options_overview, get_option_chain, list_sec_filings, read_sec_filing (10-K/10-Q sections), get_filing_documents, get_research_brief |
-| Chart | get_chart_view, set_chart_view, draw_annotations (17 drawing types incl. trade plans), list/update/delete_annotations |
-| Market-wide | screen_stocks (~6,000 stocks, 70 fields, filters/expressions/signals), get_stock_snapshot, get_market_breadth, get_sector_performance, save_screen |
+| Chart | get_chart_view, set_chart_view (symbol, interval, range, chart type, scale), get_chart_layers, edit_chart_add / edit_chart_item / edit_chart_remove (indicators with params and per-output styles, other symbols, volume, panes), edit_chart_layer (layers per interval), set_chart_layout and manage_layouts (multi-chart grid, saved layouts), draw_annotations (17 drawing types incl. trade plans), list/update/delete_annotations |
+| Market-wide | screen_stocks (~6,000 stocks, 70 fields, filters/expressions/signals), get_stock_snapshot, get_market_breadth, get_sector_performance, save_screen, list_screens, delete_screen |
 | Macro & calendars | get_macro_dashboard (FRED/Treasury/BLS), get_macro_series, get_cross_asset_board, get_earnings_calendar, get_economic_calendar |
-| Alerts & UI | create_alert (price, crossing, daily change, indicator condition), list_alerts, delete_alert, show_in_ui |
-| Trading | get_portfolio, get_trade_history, preview_order, propose_order (bracket orders for your approval), propose_close_position, get_order_tickets, cancel_order |
-| Memory | save_analysis, list_analyses, get_analysis, get_track_record (hit rate, R, alpha, Brier calibration), save_note, search_notes, watchlists, scan_watchlist |
+| Alerts & UI | create_alert (price, crossing, daily change, indicator condition), update_alert (move, pause, re-arm), list_alerts, delete_alert, get_alert_inbox, show_in_ui (pages, side panels, Trading/Journal tabs) |
+| Trading | get_portfolio, get_trade_history, preview_order, propose_order (bracket orders for your approval), propose_close_position, propose_order_change (trail a stop, move a limit; for your approval), get_order_tickets, cancel_order, get_journal |
+| Memory | save_analysis, list_analyses, get_analysis, get_track_record (hit rate, R, alpha, Brier calibration), save_note, search_notes, delete_note, list_watchlists, update_watchlist (sections, order, rename), delete_watchlist, scan_watchlist |
 
 Strategies and conditions use a safe expression language, for example
 `crosses_above(ema(20), ema(50)) and rvol(20) > 1.5` or `close < bbands(20,2).lower and close > sma(200)`.

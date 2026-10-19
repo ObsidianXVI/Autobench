@@ -15,12 +15,13 @@ from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, Field, ValidationError
 
 from . import guides
-from .schemas import AnalysisIn, AnnotationIn, AnnotationPatch, ChartView, ClosePosition, NoteIn, OrderSpec, Point, Style
+from .schemas import (AnalysisIn, AnnotationIn, AnnotationPatch, ChartView, ClosePosition, NoteIn, OrderModify, OrderSpec,
+                      Point, Style)
 from .services import analyses, annotations, backtest, filings, fundamentals, levels, market, market_context
 from .services import news as news_svc
 from .services import options as options_svc
 from .services import alerts as alerts_svc
-from .services import macro, patterns, risk, screener, technicals, workspace
+from .services import chart_layers, journal, macro, patterns, risk, screener, technicals, workspace
 from .services.events import bus
 from .services.trading import trading
 from .services import indicators as ind
@@ -612,13 +613,148 @@ def set_chart_view(
     interval: Annotated[str | None, Field(description="Switch interval")] = None,
     from_time: Annotated[str | None, Field(description="Visible range start (ISO)")] = None,
     to_time: Annotated[str | None, Field(description="Visible range end (ISO)")] = None,
-    indicators: Annotated[list[IndicatorRequest] | None, Field(description="Replace the indicators shown")] = None,
+    indicators: Annotated[list[IndicatorRequest] | None, Field(description="Replace YOUR indicators (kept in the "
+                                                                            "symbol's Agent layer, next to the user's)")] = None,
+    chart_type: Annotated[Literal["candles", "hollow", "bars", "line", "area", "heikin"] | None,
+                          Field(description="Price style of the chart shown at this interval")] = None,
+    scale: Annotated[Literal["linear", "log", "percent"] | None, Field(description="Price scale of the symbol")] = None,
 ) -> Any:
-    """Change what the user's chart displays (updates live in the web UI)."""
+    """Change what the user's chart displays (updates live in the web UI). For finer control of the user's
+    layers (styles, panes, other symbols, layers per interval) use get_chart_layers and the edit_chart_* tools."""
     fields: dict[str, Any] = {k: v for k, v in dict(symbol=symbol, interval=interval, from_time=from_time, to_time=to_time).items() if v is not None}
     if indicators is not None:
         fields["indicators"] = [i.model_dump() for i in indicators]
-    return workspace.set_view(ChartView(**fields), author=AUTHOR)
+    view = workspace.set_view(ChartView(**fields), author=AUTHOR)
+    chart_layers.set_options(view["symbol"], view.get("interval"), chart_type, scale)
+    return view
+
+
+@tool()
+def get_chart_layers(symbol: Annotated[str | None, Field(description="Default: the symbol on the user's chart")] = None) -> Any:
+    """Everything on a symbol's chart with the ids the edit tools need: layers (top first; interval tie, own price
+    chart, visibility, lock) and their items (price with chart type, volume, indicators with params / per-output
+    styles / levels / pane, other symbols' series)."""
+    return chart_layers.detail(symbol or workspace.get_view()["symbol"])
+
+
+@tool()
+def edit_chart_add(
+    kind: Annotated[Literal["indicator", "compare", "volume"], Field(description="indicator, another symbol's series, or volume")],
+    symbol: Annotated[str | None, Field(description="Chart symbol (default: the one on screen)")] = None,
+    name: Annotated[str | None, Field(description="Indicator name (list_indicators), e.g. ema, rsi, macd, bbands, vwap")] = None,
+    params: Annotated[dict | None, Field(description="Indicator params, e.g. {'length': 21}")] = None,
+    compare_symbol: Annotated[str | None, Field(description="For kind=compare: the other symbol, e.g. QQQ")] = None,
+    layer: Annotated[str | None, Field(description="Layer id or name (default: your Agent layer, or the chart "
+                                                   "layer of the current interval when the user has several)")] = None,
+    pane: Annotated[str | None, Field(description="auto | main | new | with:<item id> (share another item's pane)")] = None,
+    display: Annotated[Literal["line", "area", "candles"] | None, Field(description="For compare in its own pane")] = None,
+    styles: Annotated[dict | None, Field(description="Per output: {'macd': {'color': '#22c55e', 'width': 2, "
+                                                     "'line': 'solid|dashed|dotted', 'plot': 'line|histogram|dots', 'visible': true}}")] = None,
+    levels: Annotated[list[float] | None, Field(description="Reference lines for oscillators, e.g. [80, 20]")] = None,
+    color: Annotated[str | None, Field(description="#rrggbb for a compare/volume series")] = None,
+) -> Any:
+    """Add an indicator, another symbol's series or volume to the user's chart layers (shows live)."""
+    sym = symbol or workspace.get_view()["symbol"]
+    return chart_layers.add_series(sym, kind, name, params, compare_symbol, layer, pane, display, styles, levels, color,
+                                   interval=workspace.get_view().get("interval"))
+
+
+@tool()
+def edit_chart_item(
+    item_id: Annotated[str, Field(description="From get_chart_layers")],
+    symbol: Annotated[str | None, Field(description="Default: the symbol on screen")] = None,
+    params: Annotated[dict | None, Field(description="Indicator params to change")] = None,
+    styles: Annotated[dict | None, Field(description="Per-output style changes (merged), see edit_chart_add")] = None,
+    levels: list[float] | None = None,
+    reset_levels: Annotated[bool, Field(description="Back to the indicator's own reference lines")] = False,
+    visible: bool | None = None,
+    pane: Annotated[str | None, Field(description="auto | main | new | with:<item id>")] = None,
+    chart_type: Annotated[Literal["candles", "hollow", "bars", "line", "area", "heikin"] | None, Field(description="Price items")] = None,
+    display: Annotated[Literal["line", "area", "candles"] | None, Field(description="Compare items")] = None,
+    color: Annotated[str | None, Field(description="#rrggbb; empty string = automatic")] = None,
+    move_to_layer: Annotated[str | None, Field(description="Layer id or name")] = None,
+) -> Any:
+    """Change one chart item: indicator params, colors/width/line style/plot per output, levels, show/hide, pane,
+    price chart type, or move it to another layer."""
+    sym = symbol or workspace.get_view()["symbol"]
+    return chart_layers.update_item(sym, item_id, params, styles, levels, reset_levels, visible, pane, chart_type,
+                                    display, color, move_to_layer)
+
+
+@tool()
+def edit_chart_remove(item_ids: Annotated[list[str], Field(min_length=1)],
+                      symbol: Annotated[str | None, Field(description="Default: the symbol on screen")] = None) -> Any:
+    """Remove indicators / other symbols / volume / an extra price chart from the user's chart layers. Ask before
+    removing the user's own items."""
+    return chart_layers.remove_items(symbol or workspace.get_view()["symbol"], item_ids)
+
+
+@tool()
+def edit_chart_layer(
+    action: Annotated[Literal["create", "update", "delete"], Field()],
+    symbol: Annotated[str | None, Field(description="Default: the symbol on screen")] = None,
+    layer_id: Annotated[str | None, Field(description="For update/delete: id or name")] = None,
+    name: str | None = None,
+    visible: bool | None = None,
+    locked: Annotated[bool | None, Field(description="Locks the layer's drawings")] = None,
+    interval: Annotated[str | None, Field(description="Tie the layer to this interval (e.g. 30m)")] = None,
+    untie_interval: bool = False,
+    with_price_chart: Annotated[bool, Field(description="Give the layer its own price chart + volume, so it is the "
+                                                        "setup for its interval (e.g. a 30m entry layer)")] = False,
+    position: Annotated[Literal["top", "bottom"] | None, Field()] = None,
+    activate: Annotated[bool, Field(description="Make it the layer new drawings go to")] = False,
+) -> Any:
+    """Create, change or delete a chart layer. Example: a 30m entry setup = create(name='Entry', interval='30m',
+    with_price_chart=True), then edit_chart_add indicators with layer='Entry'. Ask before deleting the user's layers."""
+    return chart_layers.manage_layer(symbol or workspace.get_view()["symbol"], action, layer_id, name, visible, locked,
+                                     interval, untie_interval, with_price_chart, position, activate)
+
+
+@tool()
+def set_chart_layout(
+    grid: Annotated[Literal["1", "2v", "2h", "3", "4"] | None, Field(description="1 chart, 2 side by side (2v), 2 "
+                                                                                "stacked (2h), 3 or 4 charts")] = None,
+    charts: Annotated[list[dict] | None, Field(description="Per cell: {'symbol': 'AAPL', 'interval': '1d'}")] = None,
+    active: Annotated[int | None, Field(ge=0, le=3, description="Index of the active chart")] = None,
+    sync: Annotated[dict | None, Field(description="{'symbol': bool, 'interval': bool, 'crosshair': bool, 'range': bool}")] = None,
+    load_layout: Annotated[str | None, Field(description="Open a saved layout by name instead")] = None,
+) -> Any:
+    """Arrange the user's chart workbench (multi-chart grid with a symbol and interval per cell), or open a saved
+    layout. Applies live in open tabs."""
+    if load_layout:
+        data = workspace.get_layout(load_layout)["data"]
+    else:
+        cur = (workspace.get_ui_state().get("layout") or {})
+        data = {"grid": grid or cur.get("grid", "1"), "charts": cur.get("charts") or [{"symbol": "SPY", "interval": "1d"}],
+                "active": cur.get("active", 0), "sync": {**(cur.get("sync") or {}), **(sync or {})}}
+        if charts is not None:
+            clean = []
+            for c in charts:
+                if not isinstance(c, dict) or not c.get("symbol"):
+                    raise ValueError("charts look like [{'symbol': 'AAPL', 'interval': '1d'}]")
+                clean.append({"symbol": market.normalize_symbol(c["symbol"]),
+                              "interval": get_interval(c.get("interval") or "1d").name})
+            data["charts"] = clean
+        if active is not None:
+            data["active"] = active
+    bus.publish("ui.layout", {"data": data, "name": load_layout})
+    return {"applied": data, "name": load_layout}
+
+
+@tool()
+def manage_layouts(action: Annotated[Literal["list", "save_current", "delete"], Field()],
+                   name: Annotated[str | None, Field(description="For save_current/delete")] = None) -> Any:
+    """List saved chart layouts, save the user's current workbench under a name, or delete one."""
+    if action == "list":
+        return workspace.list_layouts()
+    if not name:
+        raise ValueError("name required")
+    if action == "delete":
+        return workspace.delete_layout(name)
+    cur = workspace.get_ui_state().get("layout")
+    if not cur:
+        raise ValueError("The UI has not saved its workbench yet; open the web app first")
+    return workspace.save_layout(name, cur, author=AUTHOR)
 
 
 @tool()
@@ -715,6 +851,12 @@ def search_notes(symbol: str | None = None, tag: str | None = None,
 
 
 @tool()
+def delete_note(note_id: str) -> Any:
+    """Delete a note by id (ask before deleting the user's notes)."""
+    return workspace.delete_note(note_id)
+
+
+@tool()
 def list_watchlists() -> Any:
     """Saved watchlists and their symbols."""
     return workspace.list_watchlists()
@@ -722,9 +864,23 @@ def list_watchlists() -> Any:
 
 @tool()
 def update_watchlist(name: str, add: list[str] | None = None, remove: list[str] | None = None,
-                     replace: Annotated[list[str] | None, Field(description="Replace all symbols")] = None) -> Any:
-    """Create a watchlist or add/remove symbols."""
-    return workspace.update_watchlist(name, add, remove, replace)
+                     replace: Annotated[list[str] | None, Field(description="Replace all entries (order kept)")] = None,
+                     section: Annotated[str | None, Field(description="Add the symbols at the end of this section "
+                                                                      "(created if missing)")] = None,
+                     rename_to: str | None = None,
+                     show: Annotated[bool, Field(description="Also open it in the user's watchlist panel")] = False) -> Any:
+    """Create a watchlist or change it: add/remove symbols, organise them in sections, reorder (replace with the
+    full ordered list), rename. Entries starting with ### are section headers, e.g. '###SEMIS'."""
+    out = workspace.update_watchlist(name, add, remove, replace, section, rename_to)
+    if show:
+        bus.publish("ui.navigate", {"page": "chart", "panel": "watchlist", "watchlist": out["name"]})
+    return out
+
+
+@tool()
+def delete_watchlist(name: str) -> Any:
+    """Delete a watchlist (ask the user first)."""
+    return workspace.delete_watchlist(name)
 
 
 @tool()
@@ -910,6 +1066,26 @@ def list_alerts(symbol: str | None = None,
 
 
 @tool()
+def update_alert(alert_id: str,
+                 value: Annotated[float | None, Field(description="New price level / %")] = None,
+                 message: str | None = None,
+                 status: Annotated[Literal["active", "paused"] | None, Field(description="pause, or resume/re-arm")] = None,
+                 repeat: bool | None = None,
+                 expression: str | None = None,
+                 interval: str | None = None) -> Any:
+    """Move an alert's level, change its message, pause/resume or re-arm a triggered alert."""
+    patch = {k: v for k, v in dict(value=value, message=message, status=status, repeat=repeat, expression=expression,
+                                   interval=interval).items() if v is not None}
+    return alerts_svc.update(alert_id, patch)
+
+
+@tool()
+def get_alert_inbox(unread_only: bool = False, limit: Annotated[int, Field(ge=1, le=200)] = 30) -> Any:
+    """Alerts that fired recently (newest first) and whether the user has seen them."""
+    return alerts_svc.inbox(limit, unread_only)
+
+
+@tool()
 def delete_alert(alert_id: str) -> Any:
     """Delete an alert by id (ids come from list_alerts or create_alert)."""
     return alerts_svc.delete(alert_id)
@@ -926,15 +1102,33 @@ def save_screen(name: str,
 
 
 @tool()
+def list_screens() -> Any:
+    """Saved screens (yours and the user's)."""
+    return screener.list_screens()
+
+
+@tool()
+def delete_screen(name: str) -> Any:
+    """Delete a saved screen."""
+    return screener.delete_screen(name)
+
+
+@tool()
 def show_in_ui(
-    page: Annotated[Literal["chart", "screener", "heatmap", "markets", "calendar", "trading"], Field(description="Page to open")],
+    page: Annotated[Literal["chart", "screener", "heatmap", "markets", "calendar", "trading", "journal"], Field(description="Page to open")],
     symbol: Annotated[str | None, Field(description="For page=chart")] = None,
     screen: Annotated[dict | None, Field(description="For page=screener: {filters, expression, signal, universe, sort, view}")] = None,
     period: Annotated[str | None, Field(description="For page=heatmap: 1d 1w 1m 3m 6m ytd 1y")] = None,
+    panel: Annotated[Literal["watchlist", "trade", "alerts", "news", "agent", "notes", "layers"] | None,
+                     Field(description="For page=chart: open this side panel")] = None,
+    watchlist: Annotated[str | None, Field(description="For panel=watchlist: which list")] = None,
+    tab: Annotated[str | None, Field(description="For page=trading: positions | orders | proposals | history | fills | activity | risk; "
+                                                 "for page=journal: trades | drawings | performance | notes")] = None,
 ) -> Any:
     """Switch the user's web UI to a page so they see what you are discussing (e.g. the screener with your
-    filters applied, or the sector heatmap). Use set_chart_view for chart symbol/interval/indicators."""
-    payload = {"page": page, "symbol": symbol.upper() if symbol else None, "screen": screen, "period": period}
+    filters applied, the sector heatmap, pending proposals, a side panel). Use set_chart_view for the chart."""
+    payload = {"page": page, "symbol": symbol.upper() if symbol else None, "screen": screen, "period": period,
+               "panel": panel, "watchlist": watchlist, "tab": tab}
     bus.publish("ui.navigate", payload)
     return {"ok": True, **payload}
 
@@ -1033,6 +1227,51 @@ def propose_close_position(
     orders are cancelled (or shrunk) automatically once the position is closed (or reduced)."""
     return trading.close_position(symbol, ClosePosition(qty=qty, order_type=order_type, limit_price=limit_price,
                                                         rationale=rationale), "agent")
+
+
+@tool()
+def get_journal(
+    section: Annotated[Literal["trades", "trade", "performance", "drawings", "notes"], Field()],
+    trade_id: Annotated[str | None, Field(description="For section=trade")] = None,
+    symbol: str | None = None,
+    days: Annotated[int, Field(ge=1, le=3650, description="drawings: look-back (default 30); performance: period")] = 30,
+    limit: Annotated[int, Field(ge=1, le=200)] = 30,
+) -> Any:
+    """The user's trading journal (Journal page): trades with in-trade excursions, what price did after the exit
+    and alternative exits; aggregate performance (win rate, profit factor, exit efficiency, P&L by symbol / side /
+    month / weekday, drawdown); their chart drawings of the last N days; notes per symbol and per trade. To add a
+    note to a trade, save_note with tags=['trade:<trade id>'] and the trade's symbol."""
+    match section:
+        case "trades":
+            res = journal.trades(symbol, None, limit)
+            for t in res["trades"]:
+                t["fills"] = [{k: f[k] for k in ("time", "side", "qty", "price", "action")} for f in t["fills"]][:20]
+            return res
+        case "trade":
+            if not trade_id:
+                raise ValueError("trade_id required")
+            return journal.trade_detail(trade_id)
+        case "performance":
+            res = journal.performance(days if days != 30 else 365)
+            res["equity"]["points"] = res["equity"]["points"][-60:]
+            return res
+        case "drawings":
+            return journal.drawings(days, symbol)
+        case _:
+            return journal.notes(symbol)
+
+
+@tool()
+def propose_order_change(
+    order_id: Annotated[str, Field(description="Working order id from get_portfolio (e.g. a stop-loss to trail)")],
+    rationale: Annotated[str, Field(min_length=10, description="Why; shown to the user when they approve")],
+    stop_price: Annotated[float | None, Field(gt=0, description="New stop trigger")] = None,
+    limit_price: Annotated[float | None, Field(gt=0, description="New limit")] = None,
+    qty: Annotated[float | None, Field(gt=0, description="New quantity")] = None,
+) -> Any:
+    """Propose changing a working order, e.g. trail a stop-loss to breakeven or move an entry limit. Always waits
+    for the user's approval (also in auto mode); you cannot apply it yourself."""
+    return trading.propose_modify(order_id, OrderModify(qty=qty, limit_price=limit_price, stop_price=stop_price), rationale)
 
 
 @tool()

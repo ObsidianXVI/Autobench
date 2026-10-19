@@ -132,7 +132,10 @@ def get_watchlist(name: str) -> dict:
 
 
 def update_watchlist(name: str, add: list[str] | None = None, remove: list[str] | None = None,
-                     replace: list[str] | None = None) -> dict:
+                     replace: list[str] | None = None, section: str | None = None,
+                     rename_to: str | None = None) -> dict:
+    """Create a watchlist or change it. Entries starting with ### are section headers (as in the UI);
+    with [section], added symbols go at the end of that section (created at the bottom if missing)."""
     name = name.strip()
     if not name:
         raise ValueError("watchlist name required")
@@ -145,17 +148,45 @@ def update_watchlist(name: str, add: list[str] | None = None, remove: list[str] 
         if replace is not None:
             syms = []
             add = replace
-        for x in add or []:
-            x = normalize_symbol(x)
-            if x not in syms:
-                syms.append(x)
-        rm = {normalize_symbol(x) for x in remove or []}
+        added = [x for x in dict.fromkeys(_entry(x) for x in add or []) if x not in syms]
+        if section:
+            header = _entry("###" + section.removeprefix("###"))
+            if header not in syms:
+                syms.append(header)
+            at = syms.index(header) + 1
+            while at < len(syms) and not syms[at].startswith("###"):
+                at += 1
+            syms[at:at] = added
+        else:
+            syms += added
+        rm = {_entry(x) for x in remove or []}
         r.symbols = [x for x in syms if x not in rm]
         r.updated_at = utcnow()
         s.flush()
         d = _wl(r)
+    if rename_to and rename_to.strip() and rename_to.strip() != name:
+        new = rename_to.strip()
+        with session_scope() as s:
+            if s.get(WatchlistRow, new) is not None:
+                raise ValueError(f"A watchlist named '{new}' already exists")
+            old = s.get(WatchlistRow, name)
+            s.add(WatchlistRow(name=new, symbols=list(old.symbols), created_at=old.created_at, updated_at=utcnow()))
+            s.delete(old)
+        bus.publish("watchlist.deleted", {"name": name, "renamed_to": new})
+        d = get_watchlist(new)
     bus.publish("watchlist.updated", d)
     return d
+
+
+def _entry(x: str) -> str:
+    """A symbol, or a ### section header (kept as the UI writes it: upper case, no padding)."""
+    x = x.strip()
+    if x.startswith("###"):
+        title = x[3:].strip().upper()
+        if not title:
+            raise ValueError("section name required after ###")
+        return "###" + title
+    return normalize_symbol(x)
 
 
 def delete_watchlist(name: str) -> dict:

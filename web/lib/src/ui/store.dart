@@ -104,6 +104,9 @@ const prefDefaults = <String, Object?>{
   'alerts.filter': 'all',
   'news.market': false,
   'calendar.tab': 'earnings',
+  'journal.tab': 'trades',
+  'journal.days': 365,
+  'journal.drawDays': 30,
   'calendar.universe': 'sp500',
   'calendar.minCap': 0.0,
   'calendar.country': 'United States',
@@ -353,6 +356,27 @@ class Store {
       undo.push(Command(label, undo: () async => _replaceConfig(symbol, before), redo: () async => _replaceConfig(symbol, after)));
       undoVersion.value++;
     }
+  }
+
+  /// Takes the saved layers of [symbol] after someone else (the agent) changed them. Local edits not
+  /// saved yet are dropped; undo restores the previous state.
+  Future<void> reloadConfig(String symbol) async {
+    if (!_configs.containsKey(symbol)) return; // loaded fresh when first shown
+    try {
+      final j = await request('/api/chart-config/${Uri.encodeComponent(symbol)}');
+      if (j['layers'].v is! List) return;
+      final before = jsonEncode(_configs[symbol]!.toJson());
+      final fresh = SymbolConfig.fromJson(j);
+      final after = jsonEncode(fresh.toJson());
+      if (before == after) return;
+      _configTimers[symbol]?.cancel();
+      _dirtyConfigs.remove(symbol);
+      _configs[symbol] = fresh;
+      lastConfigChanged = symbol;
+      configVersion.value++;
+      undo.push(Command('Agent chart change', undo: () async => _replaceConfig(symbol, before), redo: () async => _replaceConfig(symbol, after)));
+      undoVersion.value++;
+    } catch (_) {}
   }
 
   void _replaceConfig(String symbol, String json) {

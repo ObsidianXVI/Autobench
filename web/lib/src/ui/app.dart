@@ -21,6 +21,7 @@ import 'kit/overlay.dart';
 import 'kit/state.dart';
 import 'pages/calendar.dart';
 import 'pages/heatmap.dart';
+import 'pages/journal.dart';
 import 'pages/markets.dart';
 import 'pages/screener.dart';
 import 'pages/trading.dart';
@@ -37,6 +38,7 @@ const pages = [
   ('markets', 'Markets', 'globe'),
   ('calendar', 'Calendar', 'calendar'),
   ('trading', 'Trading', 'wallet'),
+  ('journal', 'Journal', 'note'),
 ];
 
 class App {
@@ -224,6 +226,8 @@ class App {
         p.onShow();
       case TradingPage p:
         p.onShow();
+      case JournalPage p:
+        p.onShow();
       case ChartPage p:
         for (final panel in p.panels) {
           panel.engine.invalidate();
@@ -253,6 +257,10 @@ class App {
         return p.root;
       case 'trading':
         final p = TradingPage();
+        _pageObjects[key] = p;
+        return p.root;
+      case 'journal':
+        final p = JournalPage();
         _pageObjects[key] = p;
         return p.root;
       default:
@@ -423,6 +431,9 @@ class App {
           _pushActivity('Saved note: ${d['title'].s}', 'agent', d['symbol'].s);
         }
       case 'watchlist.updated' || 'watchlist.deleted':
+        if (e.type == 'watchlist.deleted' && d['name'].s == store.watchlist.value) {
+          store.watchlist.value = d['renamed_to'].s ?? 'default';
+        }
         store.watchlistVersion.value++;
       case 'alert.created' || 'alert.updated' || 'alert.deleted':
         store.loadAlerts();
@@ -449,7 +460,33 @@ class App {
           store.heatmapState.value = {...store.heatmapState.value, 'period': d['period'].s};
         }
         if (page != null && pages.any((p) => p.$1 == page)) store.page.value = page;
-        _pushActivity('Opened ${page ?? 'a page'} for you', 'agent', d['symbol'].s);
+        if (d['watchlist'].s != null) store.watchlist.value = d['watchlist'].s!;
+        if (page == 'chart' && d['panel'].s != null) store.panel.value = d['panel'].s;
+        final tab = d['tab'].s;
+        if (tab != null) {
+          final po = _pageObjects[page];
+          if (po is TradingPage) {
+            po.selectTab(tab);
+          } else if (po is JournalPage) {
+            po.selectTab(tab);
+          } else {
+            store.setPref(page == 'journal' ? 'journal.tab' : 'trading.tab', tab);
+          }
+        }
+        _pushActivity('Opened ${d['panel'].s ?? page ?? 'a page'} for you', 'agent', d['symbol'].s);
+      case 'ui.layout':
+        if (d['data'].v is Map) {
+          store.applyLayout(d['data']);
+          if (d['name'].s != null) store.layoutName.value = d['name'].s!;
+          if (store.page.value != 'chart') store.page.value = 'chart';
+          _pushActivity(d['name'].s != null ? 'Opened layout ${d['name'].s}' : 'Arranged the charts', 'agent', null);
+        }
+      case 'chart_config.updated':
+        final sym = d['symbol'].s;
+        if (sym != null) {
+          store.reloadConfig(sym);
+          if (d['author'].s == 'agent') _pushActivity(d['what'].s ?? 'Changed the chart', 'agent', sym);
+        }
       case 'screens.updated':
         final s = _pageObjects['screener'];
         if (s is ScreenerPage) s.reloadSaved();

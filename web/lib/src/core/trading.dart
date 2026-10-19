@@ -206,10 +206,30 @@ class TTicket {
   double? get takeProfit => spec['take_profit'].d;
   String get intent => check['intent'].s ?? 'open';
 
+  /// A proposed change to a working order (spec: order_id, changes, role, and the order as it is).
+  bool get isModify => spec['action'].s == 'modify';
+  String? get orderId => spec['order_id'].s;
+  double? get newStop => spec['changes']['stop_price'].d;
+  double? get newLimit => spec['changes']['limit_price'].d;
+  double? get newQty => spec['changes']['qty'].d;
+
+  /// What a modify proposal changes, e.g. "stop 180.00 → 185.00".
+  List<String> get changeTexts => [
+        if (newStop != null) 'stop ${stopPrice?.toStringAsFixed(2) ?? '–'} → ${newStop!.toStringAsFixed(2)}',
+        if (newLimit != null) 'limit ${limitPrice?.toStringAsFixed(2) ?? '–'} → ${newLimit!.toStringAsFixed(2)}',
+        if (newQty != null) 'qty ${_q(qty)} → ${_q(newQty!)}',
+      ];
+
   /// Entry price for display: limit, else stop trigger, else the market price at proposal time.
-  double? get entryPrice => limitPrice ?? stopPrice ?? check['estimate']['price'].d;
+  /// For a modify proposal: the proposed new price.
+  double? get entryPrice =>
+      isModify ? (newStop ?? newLimit ?? stopPrice ?? limitPrice) : limitPrice ?? stopPrice ?? check['estimate']['price'].d;
 
   String get summary {
+    if (isModify) {
+      final role = (spec['role'].s ?? 'order').replaceAll('_', ' ');
+      return 'Change $symbol $role: ${changeTexts.join(', ')}';
+    }
     final t = switch (orderType) { 'market' => 'MKT', 'limit' => 'LMT', 'stop' => 'STP', _ => 'STP LMT' };
     final px = entryPrice;
     return '${side.toUpperCase()} ${_q(qty)} $symbol $t${px != null && orderType != 'market' ? ' @ ${px.toStringAsFixed(2)}' : ''}';

@@ -62,7 +62,8 @@ class TradingOverlay {
       if (d.position != null) PriceLine(d.position!.avgCost, positionColor, 'position', dashed: false),
       for (final o in _orders) PriceLine(_priceOf(o)!, _orderColor(o), o.roleLabel),
       for (final t in d.tickets) ...[
-        if (t.entryPrice != null && t.orderType != 'market') PriceLine(t.entryPrice!, agentLineColor, 'proposal'),
+        if (t.isModify && t.entryPrice != null) PriceLine(t.entryPrice!, agentLineColor, 'proposed ${t.newStop != null ? 'stop' : 'price'}')
+        else if (t.entryPrice != null && t.orderType != 'market') PriceLine(t.entryPrice!, agentLineColor, 'proposal'),
         if (t.stopLoss != null) PriceLine(t.stopLoss!, '${agentLineColor}aa', 'proposal stop'),
         if (t.takeProfit != null) PriceLine(t.takeProfit!, '${agentLineColor}aa', 'proposal target'),
       ],
@@ -278,7 +279,8 @@ class TradingOverlay {
       if (y == null) continue;
       items.add((y, (right) {
         _label(ctx, right, y, [
-          ('✦ ${t.side.toUpperCase()} ${qtyText(t.qty)}', agentLineColor, '#fff'),
+          (t.isModify ? '✦ MOVE ${(t.spec['role'].s ?? 'order').replaceAll('_', ' ')}' : '✦ ${t.side.toUpperCase()} ${qtyText(t.qty)}',
+              agentLineColor, '#fff'),
           ('Review', engine.theme.bg, agentLineColor),
         ], agentLineColor, hitKind: 'ticket', ticket: t);
       }));

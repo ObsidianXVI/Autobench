@@ -760,3 +760,70 @@ def test_chart_context_menu_and_close_position(page, server):
     page.click(".dialog button:has-text('Sell to close')")
     page.wait_for_selector(".toast:has-text('Sold SPY')")
     page.wait_for_function("fetch('/api/trading/overview').then(r => r.json()).then(o => o.positions.length === 0)")
+
+
+def test_agent_edits_layers_layout_panels_and_watchlist(page, server):
+    page.wait_for_function("__autobench.bars() > 50")
+    mcp_call(server, "edit_chart_add", {"symbol": "SPY", "kind": "indicator", "name": "ema", "params": {"length": 21},
+                                        "styles": {"ema": {"color": "#22c55e", "width": 3}}})
+    page.wait_for_selector(".legend .ind-name:has-text('ema')", timeout=10000)
+    page.click("button[aria-label='Layers & objects']")
+    page.wait_for_selector(".layer-head:has-text('Agent')")
+    # the agent makes a 30m entry layer with its own chart and switches the chart to it
+    mcp_call(server, "edit_chart_layer", {"symbol": "SPY", "action": "create", "name": "Entry", "interval": "30m",
+                                          "with_price_chart": True})
+    page.wait_for_selector(".layer-head:has-text('Entry')", timeout=10000)
+    mcp_call(server, "set_chart_view", {"interval": "30m"})
+    page.wait_for_selector(".legend-layer:has-text('Entry')", timeout=10000)
+    # panels, watchlists and the multi-chart grid
+    mcp_call(server, "update_watchlist", {"name": "Semis", "add": ["NVDA", "AMD"], "section": "chips", "show": True})
+    page.wait_for_selector(".wl-row[data-symbol='AMD']", timeout=10000)
+    mcp_call(server, "show_in_ui", {"page": "chart", "panel": "alerts"})
+    page.wait_for_selector(".panel-title:text-is('Alerts')")
+    mcp_call(server, "set_chart_layout", {"grid": "2v", "charts": [{"symbol": "AAPL"}, {"symbol": "MSFT", "interval": "1h"}]})
+    page.wait_for_function("__autobench.chart.count() === 2", timeout=10000)
+    httpx.delete(f"{server}/api/watchlists/Semis")
+
+
+def test_agent_order_change_is_approved_in_the_ui(page, server):
+    sim_price(server, "AAPL", 100)
+    httpx.post(f"{server}/api/trading/orders", json={"symbol": "AAPL", "side": "buy", "qty": 10, "order_type": "limit",
+                                                     "limit_price": 101, "stop_loss": 95}, headers=TH)
+    sl = next(o for o in httpx.get(f"{server}/api/trading/orders").json() if o["role"] == "stop_loss")
+    mcp_call(server, "propose_order_change", {"order_id": sl["id"], "stop_price": 99, "rationale": "Move the stop to breakeven"})
+    page.wait_for_selector(".toast:has-text('Change AAPL stop loss')")
+    page.click(".toast:has-text('Change AAPL') button:has-text('Review')")
+    page.wait_for_selector(".dialog:has-text('stop 95.00 → 99.00')")
+    page.click(".dialog button:has-text('Approve change')")
+    page.wait_for_selector(".toast:has-text('Order changed')")
+    sl = next(o for o in httpx.get(f"{server}/api/trading/orders").json() if o["role"] == "stop_loss")
+    assert sl["stop_price"] == 99
+    httpx.post(f"{server}/api/trading/positions/AAPL/close", json={}, headers=TH)
+
+
+def test_journal_page(page, server):
+    sim_price(server, "MSFT", 50)
+    httpx.post(f"{server}/api/trading/orders", json={"symbol": "MSFT", "side": "buy", "qty": 20, "order_type": "limit",
+                                                     "limit_price": 51, "stop_loss": 47, "take_profit": 60}, headers=TH)
+    sim_price(server, "MSFT", 55)
+    httpx.post(f"{server}/api/trading/positions/MSFT/close", json={}, headers=TH)
+    httpx.post(f"{server}/api/annotations/MSFT", json={"type": "horizontal_line", "points": [{"price": 52}], "text": "breakout"})
+    page.click("a.page-tab:has-text('Journal')")
+    row = page.wait_for_selector(".jr-trades tr.jr-trade:has-text('MSFT')")
+    row.click()
+    page.wait_for_selector(".jr-trade-detail:has-text('Other exits')")
+    assert "At the planned stop" in page.inner_text(".jr-trade-detail")
+    page.click("button[aria-label='Add trade note']")
+    page.fill(".dialog textarea[aria-label='Note content']", "Took profit into resistance.")
+    page.click(".dialog button:has-text('Save')")
+    page.wait_for_selector(".jr-trade-notes .jr-note:has-text('Took profit')", timeout=10000)
+    page.click(".tr-tabs .tab[data-tab='performance']")
+    page.wait_for_selector(".jr-perf .tr-kpi:has-text('Win rate')")
+    page.wait_for_selector(".jr-bar-row:has-text('MSFT')")
+    page.click(".tr-tabs .tab[data-tab='drawings']")
+    page.wait_for_selector(".jr-group:has-text('MSFT') .jr-drawing:has-text('breakout')")
+    page.click(".tr-tabs .tab[data-tab='notes']")
+    page.wait_for_selector(".jr-group:has-text('MSFT') .jr-note:has-text('Took profit')")
+    # the agent opens a journal tab
+    mcp_call(server, "show_in_ui", {"page": "journal", "tab": "performance"})
+    page.wait_for_selector(".tr-tabs .tab.on[data-tab='performance']")

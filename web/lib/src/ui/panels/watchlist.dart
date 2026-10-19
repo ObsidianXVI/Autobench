@@ -44,7 +44,8 @@ class WatchlistPanel {
 
   WatchlistPanel() {
     append(root, [_head, _cols, _list, _split, details.root]);
-    _scope.listen(store.watchlist, (_) => _render());
+    _scope.listen(store.watchlist, (_) => _current == null ? refresh() : _render());
+    _scope.listen(store.watchlistVersion, (_) => refresh()); // changed elsewhere (agent, screener, heatmap)
     _scope.listen(store.active, (_) => _renderRows());
     for (final c in store.charts) {
       _scope.listen(c.symbol, (_) => _renderRows());

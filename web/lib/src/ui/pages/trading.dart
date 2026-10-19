@@ -459,6 +459,14 @@ class TradingPage {
 
   // ---------------------------------------------------------------- tabs
 
+  /// Opens a tab (e.g. from the agent via show_in_ui).
+  void selectTab(String k) {
+    if (!_tabs.any((t) => t.$1 == k)) return;
+    store.setPref('trading.tab', k);
+    _renderTabs();
+    _renderTab();
+  }
+
   void _renderTabs() {
     final pending = trade.pending.value.length;
     replace(_tabBar, [

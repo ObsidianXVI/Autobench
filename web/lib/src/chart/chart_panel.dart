@@ -152,7 +152,10 @@ class ChartPanel {
       _load();
     });
     _scope.listen(store.configVersion, (_) {
-      if (store.lastConfigChanged == symbol) _applyConfig();
+      if (store.lastConfigChanged != symbol) return;
+      // undo/redo and the agent's edits replace the symbol's config object
+      if (cfg != null) cfg = store.configNow(symbol) ?? cfg;
+      _applyConfig();
     });
     _scope.listen(store.specs, (_) => _applyConfig());
     _scope.listen(store.prefs, (_) => _applyPrefs());

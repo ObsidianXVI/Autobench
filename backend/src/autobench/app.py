@@ -22,6 +22,7 @@ from .services.broker import BrokerError
 from .schemas import AccountSelect, AnalysisIn, AnnotationIn, AnnotationPatch, BrokerConnection, ChartView, ClosePosition, NoteIn
 from .schemas import OrderModify, OrderSpec
 from .services import alerts as alerts_svc
+from .services import journal
 from .services import analyses, annotations, backtest, fundamentals, macro, market, market_context, screener
 from .services import scheduler, technicals, workspace
 from .services import indicators as ind
@@ -443,6 +444,27 @@ def create_app() -> FastAPI:
     @app.delete("/api/alerts/{alert_id}")
     def alerts_delete(alert_id: str):
         return alerts_svc.delete(alert_id)
+
+    # --- journal ------------------------------------------------------------------------------
+    @app.get("/api/journal/trades")
+    def journal_trades(symbol: str | None = None, status: str | None = None, limit: int = 100):
+        return journal.trades(symbol, status, limit)
+
+    @app.get("/api/journal/trades/{trade_id}")
+    def journal_trade(trade_id: str):
+        return journal.trade_detail(trade_id)
+
+    @app.get("/api/journal/drawings")
+    def journal_drawings(days: int = 30, symbol: str | None = None, author: str | None = None):
+        return journal.drawings(days, symbol, author)
+
+    @app.get("/api/journal/performance")
+    def journal_performance(days: int = 365):
+        return journal.performance(days)
+
+    @app.get("/api/journal/notes")
+    def journal_notes(symbol: str | None = None):
+        return journal.notes(symbol)
 
     @app.get("/api/inbox")
     def inbox_list(limit: int = 100, unread: bool = False):

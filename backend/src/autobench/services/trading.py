@@ -589,6 +589,60 @@ class TradingService:
             r.updated_at = _now()
             return self._ticket_dict(r)
 
+    def propose_modify(self, order_id: str, patch: OrderModify, rationale: str, actor: str = "agent") -> dict:
+        """A proposed change to a working order (e.g. trail a stop, move a limit). Always waits for the
+        user's approval, also in auto mode: the change is applied by the user's approve()."""
+        changes = patch.model_dump(exclude_none=True)
+        if not changes:
+            raise ValueError("Give qty, limit_price or stop_price to change")
+        o = self._order(order_id)
+        if o.get("status") not in ("working", "pending", "submitted", "partially_filled"):
+            raise ValueError(f"Order {order_id} is {o.get('status')}; only working orders can be changed")
+        if o.get("source") != "autobench":
+            raise ValueError("Only orders placed through Autobench can be changed here")
+        if "limit_price" in changes and o.get("type") not in ("limit", "stop_limit"):
+            raise ValueError(f"Order {order_id} is a {o.get('type')} order without a limit price")
+        if "stop_price" in changes and o.get("type") not in ("stop", "stop_limit"):
+            raise ValueError(f"Order {order_id} is a {o.get('type')} order without a stop price")
+        warnings = []
+        px = self._quote(o["symbol"])
+        if o.get("role") == "stop_loss" and "stop_price" in changes and o.get("stop_price") and px:
+            long = o["side"] == "sell"
+            if (long and changes["stop_price"] >= px) or (not long and changes["stop_price"] <= px):
+                raise ValueError(f"A stop at {changes['stop_price']} is through the market ({px:.2f}) and would trigger at once")
+            if (long and changes["stop_price"] < o["stop_price"]) or (not long and changes["stop_price"] > o["stop_price"]):
+                warnings.append("This moves the stop further away: more risk on the position")
+        st = self._broker().status()
+        spec = {"action": "modify", "order_id": order_id, "changes": changes, "role": o.get("role"),
+                "symbol": o["symbol"], "side": o["side"], "qty": o["qty"], "order_type": o.get("type"),
+                "limit_price": o.get("limit_price"), "stop_price": o.get("stop_price"), "tif": o.get("tif"),
+                "rationale": rationale}
+        tid = uuid.uuid4().hex[:10]
+        check = {"ok": True, "intent": "modify", "errors": [], "warnings": warnings,
+                 "estimate": {"market_price": px, "price": px}}
+        with db.session_scope() as s:
+            s.add(db.OrderTicketRow(id=tid, symbol=o["symbol"], spec=spec, source=actor, status="pending",
+                                    rationale=rationale, check=check, order_ids=[], broker=st.get("kind"),
+                                    account=st.get("account")))
+        self._audit(actor, "propose_modify", o["symbol"], tid, {"order_id": order_id, **changes})
+        t = self.ticket(tid)
+        bus.publish("trading.ticket", t)
+        return t
+
+    def _approve_modify(self, t: dict) -> dict:
+        spec = t["spec"]
+        try:
+            self.modify_order(spec["order_id"], OrderModify(**spec["changes"]), "user")
+        except (BrokerError, KeyError, ValueError) as e:
+            self._update_ticket(t["id"], status="error", message=str(e), decided=True)
+            out = self.ticket(t["id"])
+            bus.publish("trading.ticket", out)
+            raise ValueError(f"Could not change the order: {e}") from e
+        self._audit("user", "approve", t["symbol"], t["id"])
+        out = self._update_ticket(t["id"], status="applied", message=None, decided=True)
+        bus.publish("trading.ticket", out)
+        return out
+
     def approve(self, ticket_id: str) -> dict:
         """User only: re-check a pending agent ticket and send it."""
         t = self.ticket(ticket_id)
@@ -597,6 +651,8 @@ class TradingService:
         cur = self._current_account()
         if t.get("account") and cur and t["account"] != cur:
             raise ValueError(f"This proposal was made for account {t['account']}; switch to that account to approve it")
+        if (t.get("spec") or {}).get("action") == "modify":
+            return self._approve_modify(t)
         spec = OrderSpec.model_validate(t["spec"])
         check = self.preview(spec, "user")
         if not check["ok"]:
