@@ -19,7 +19,7 @@ from .config import REPO_DIR, get_settings
 from .mcp_server import mcp
 from .providers.base import ProviderError
 from .services.broker import BrokerError
-from .schemas import AnalysisIn, AnnotationIn, AnnotationPatch, BrokerConnection, ChartView, ClosePosition, NoteIn
+from .schemas import AccountSelect, AnalysisIn, AnnotationIn, AnnotationPatch, BrokerConnection, ChartView, ClosePosition, NoteIn
 from .schemas import OrderModify, OrderSpec
 from .services import alerts as alerts_svc
 from .services import analyses, annotations, backtest, fundamentals, macro, market, market_context, screener
@@ -513,7 +513,11 @@ def create_app() -> FastAPI:
 
     @app.post("/api/trading/connect", dependencies=guard)
     def trading_connect(body: BrokerConnection):
-        return trading.reconnect(body.broker, body.host, body.port, body.client_id)
+        return trading.reconnect(body.broker, body.host, body.port, body.client_id, body.account)
+
+    @app.post("/api/trading/account", dependencies=guard)
+    def trading_account(body: AccountSelect):
+        return trading.select_account(body.account)
 
     @app.get("/api/trading/overview")
     def trading_overview():

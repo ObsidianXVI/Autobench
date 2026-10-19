@@ -439,3 +439,119 @@ def test_proposal_expiry_respects_market_hours():
     assert next_session_close(late) == datetime(2026, 10, 26, 20, 0)
     assert trading._expiry(sat) == datetime(2026, 10, 19, 20, 0)  # weekend proposal waits for Monday
     assert trading._expiry(tue) == datetime(2026, 10, 20, 19, 0)  # in session: the 240-minute TTL
+
+
+@pytest.mark.anyio
+async def test_switching_accounts(client):
+    st = client.get("/api/trading/status").json()
+    assert st["account"] == "SIM-PAPER" and [a["id"] for a in st["accounts"]] == ["SIM-PAPER", "SIM-PAPER-2"]
+    assert client.post("/api/trading/account", json={"account": "SIM-PAPER"}).status_code == 403  # guarded
+    assert order(client, limit_price=101).json()["status"] == "filled"
+    async with Client(mcp) as c:  # an agent proposal made while SIM-PAPER is selected
+        err, t = await call(c, "propose_order", {"symbol": "MSFT", "side": "buy", "qty": 10, "limit_price": 49,
+                                                 "stop_loss": 47, "rationale": "Account-switch test proposal."})
+        assert not err and t["account"] == "SIM-PAPER"
+
+    st = client.post("/api/trading/account", json={"account": "SIM-PAPER-2"}, headers=H).json()
+    assert st["account"] == "SIM-PAPER-2" and st["connection"]["account"] == "SIM-PAPER-2"
+    ov = client.get("/api/trading/overview").json()
+    assert ov["positions"] == [] and ov["account"]["cash"] == 100_000  # a separate book
+    assert client.get("/api/trading/fills").json() == []  # history is per account
+    r = client.post(f"/api/trading/tickets/{t['id']}/approve", headers=H)
+    assert r.status_code == 400 and "switch to that account" in r.json()["detail"]
+    o2 = order(client, symbol="MSFT", limit_price=51).json()
+    assert o2["status"] == "filled" and o2["account"] == "SIM-PAPER-2"
+    fills = client.get("/api/trading/fills").json()
+    assert [f["symbol"] for f in fills] == ["MSFT"] and fills[0]["exec_id"].startswith("TX")
+    assert client.post("/api/trading/account", json={"account": "DU123"}, headers=H).status_code == 400
+
+    # the choice survives a reconnect; switching back shows the first book again
+    assert client.post("/api/trading/connect", json={"broker": "sim"}, headers=H).json()["account"] == "SIM-PAPER-2"
+    client.post("/api/trading/account", json={"account": "SIM-PAPER"}, headers=H)
+    assert [p["symbol"] for p in client.get("/api/trading/overview").json()["positions"]] == ["AAPL"]
+    assert client.post(f"/api/trading/tickets/{t['id']}/approve", headers=H).json()["status"] == "working"
+    assert any(a["action"] == "account" for a in client.get("/api/trading/audit").json())
+
+
+def test_ibkr_account_selection_against_a_fake_ib_client():
+    from ib_async import AccountValue, Fill, Execution, Order, OrderStatus, PnL, PortfolioItem, Trade
+
+    from autobench.services.broker.ibkr import IbkrBroker
+
+    class FakeIB:
+        def __init__(self):
+            self.connected, self.subscribed, self.pnl_subs = False, [], []
+            stk = SimpleNamespace(symbol="AAPL", secType="STK")
+            self._trades = [Trade(contract=stk, order=Order(orderId=i, account=a, action="BUY", totalQuantity=1, orderType="LMT"),
+                                  orderStatus=OrderStatus(orderId=i, status="Submitted"))
+                            for i, a in ((1, "DU1"), (2, "DU2"))]
+            self._fills = [Fill(contract=stk, execution=Execution(execId=f"E{a}", acctNumber=a, side="BOT", shares=1, price=1,
+                                                                  time=datetime.now(UTC)), commissionReport=None, time=datetime.now(UTC))
+                           for a in ("DU1", "DU2")]
+
+        async def connectAsync(self, *a, **kw):
+            self.connected = True
+
+        def isConnected(self):
+            return self.connected
+
+        def managedAccounts(self):
+            return ["DU1", "DU2"]
+
+        async def reqAccountUpdatesAsync(self, account):
+            self.subscribed.append(account)
+
+        def reqPnL(self, account):
+            self.pnl_subs.append(account)
+
+        def cancelPnL(self, account):
+            self.pnl_subs.remove(account)
+
+        def pnl(self, account=""):
+            return [PnL(account=account, dailyPnL=1.0)] if account in self.pnl_subs else []
+
+        async def reqAllOpenOrdersAsync(self):
+            return []
+
+        def trades(self):
+            return self._trades
+
+        openTrades = trades
+
+        def fills(self):
+            return self._fills
+
+        def accountValues(self, account=""):
+            return [AccountValue(account, "NetLiquidation", "1000" if account == "DU1" else "2000", "USD", "")]
+
+        def portfolio(self, account=""):
+            return [PortfolioItem(contract=SimpleNamespace(symbol="MSFT" if account == "DU2" else "AAPL", secType="STK"),
+                                  position=1, marketPrice=1, marketValue=1, averageCost=1, unrealizedPNL=0, realizedPNL=0,
+                                  account=account)]
+
+        def disconnect(self):
+            self.connected = False
+
+    b = IbkrBroker(port=4002, account="DU2")  # the saved choice
+    b._start_loop()
+    fake = FakeIB()
+    b.ib = fake
+    try:
+        b._call(b._try_connect)
+        st = b.status()
+        assert st["account"] == "DU2" and st["accounts"] == [{"id": "DU1", "paper": True}, {"id": "DU2", "paper": True}]
+        assert fake.subscribed == ["DU2"] and fake.pnl_subs == ["DU2"]
+        assert [o["id"] for o in b.orders()] == ["2"] and [f["exec_id"] for f in b.fills()] == ["EDU2"]
+        assert b.account()["net_liquidation"] == 2000 and b.positions()[0]["symbol"] == "MSFT"
+        b.select_account("DU1")
+        assert fake.subscribed == ["DU2", "DU1"] and fake.pnl_subs == ["DU1"]
+        assert [o["id"] for o in b.orders()] == ["1"] and b.account()["net_liquidation"] == 1000
+        with pytest.raises(ValueError, match="not in this IBKR login"):
+            b.select_account("U999")
+        # a saved account that this login does not have falls back to the first one
+        b2 = IbkrBroker(account="U999")
+        b2._loop, b2.ib, fake.connected, fake.subscribed = b._loop, fake, False, []
+        b2._call(b2._try_connect)
+        assert b2.status()["account"] == "DU1" and fake.subscribed == ["DU1"]
+    finally:
+        b._loop.call_soon_threadsafe(b._loop.stop)

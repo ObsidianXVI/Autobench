@@ -1,5 +1,6 @@
 """Built-in paper-trading simulator: a cash account filled at the latest quote. Used for tests, demos
-and when no IBKR Gateway is available. State persists in the app_state table.
+and when no IBKR Gateway is available. State persists in the app_state table, one book per account;
+there are two simulated accounts and only the selected one is matched.
 
 Matching (on every placement and every tick): market orders fill at the current price; limits fill
 when the price is at or through the limit (at the better of the two); stops trigger when the price
@@ -16,6 +17,8 @@ from .base import DONE_STATUSES, OPEN_STATUSES, Broker, BrokerError, make_ref, p
 
 STATE_KEY = "sim:book"
 ACCOUNT_ID = "SIM-PAPER"
+# account -> order/exec id prefix (ids stay unique across books, fills are keyed by exec id)
+ACCOUNTS = {ACCOUNT_ID: "S", "SIM-PAPER-2": "T"}
 
 
 def _commission(qty: float) -> float:
@@ -29,16 +32,21 @@ def _today() -> str:
 class SimBroker(Broker):
     kind = "sim"
 
-    def __init__(self, starting_cash: float = 100_000.0):
+    def __init__(self, starting_cash: float = 100_000.0, account: str | None = None):
         super().__init__()
         self.starting_cash = starting_cash
+        self.account_id = account if account in ACCOUNTS else ACCOUNT_ID
         self._connected = False
         self._prices: dict[str, float] = {}  # manual overrides (tests, what-ifs)
         self._quote_cache: dict[str, tuple[float, float]] = {}
 
     # --- persistence ---------------------------------------------------------------------------
+    @property
+    def _key(self) -> str:
+        return STATE_KEY if self.account_id == ACCOUNT_ID else f"{STATE_KEY}:{self.account_id}"
+
     def _load(self) -> dict:
-        book = db.state_get(STATE_KEY)
+        book = db.state_get(self._key)
         if not book:
             book = {"cash": self.starting_cash, "start_cash": self.starting_cash, "positions": {}, "orders": [],
                     "fills": [], "next_id": 1, "day": _today(), "day_start_equity": self.starting_cash,
@@ -48,12 +56,12 @@ class SimBroker(Broker):
     def _save(self, book: dict) -> None:
         book["orders"] = book["orders"][-500:]
         book["fills"] = book["fills"][-2000:]
-        db.state_set(STATE_KEY, book)
+        db.state_set(self._key, book)
 
     def reset(self, cash: float | None = None) -> None:
         with self._lock:
             c = float(cash or self.starting_cash)
-            db.state_set(STATE_KEY, {"cash": c, "start_cash": c, "positions": {}, "orders": [], "fills": [],
+            db.state_set(self._key, {"cash": c, "start_cash": c, "positions": {}, "orders": [], "fills": [],
                                      "next_id": 1, "day": _today(), "day_start_equity": c, "realized": 0.0})
             self._prices.clear()
         self.emit("account", None)
@@ -93,8 +101,18 @@ class SimBroker(Broker):
         self.emit("status", self.status())
 
     def status(self) -> dict:
-        return {"kind": self.kind, "connected": self._connected, "account": ACCOUNT_ID, "paper": True,
+        return {"kind": self.kind, "connected": self._connected, "account": self.account_id, "paper": True,
+                "accounts": [{"id": a, "paper": True} for a in ACCOUNTS] if self._connected else [],
                 "message": "Simulated paper account (fills at the latest quote)" if self._connected else "Disconnected"}
+
+    def select_account(self, account: str) -> None:
+        if account not in ACCOUNTS:
+            raise ValueError(f"Account {account} is not available (simulator accounts: {', '.join(ACCOUNTS)})")
+        with self._lock:
+            self.account_id = account
+        self.emit("status", self.status())
+        self.emit("account", None)
+        self.tick()
 
     # --- reads ----------------------------------------------------------------------------------
     def _roll_day(self, book: dict) -> None:
@@ -122,7 +140,7 @@ class SimBroker(Broker):
                            for o in book["orders"]
                            if o["side"] == "buy" and o["status"] in ("working", "partially_filled") and o["role"] != "take_profit")
             avail = book["cash"] - reserved
-            return {"account": ACCOUNT_ID, "currency": "USD", "net_liquidation": round(net, 2), "cash": round(book["cash"], 2),
+            return {"account": self.account_id, "currency": "USD", "net_liquidation": round(net, 2), "cash": round(book["cash"], 2),
                     "buying_power": round(max(0.0, avail), 2), "available_funds": round(avail, 2),
                     "gross_position_value": round(gross, 2), "unrealized_pnl": round(unreal, 2),
                     "realized_pnl": round(book.get("realized", 0.0), 2),
@@ -150,7 +168,7 @@ class SimBroker(Broker):
 
     # --- writes ---------------------------------------------------------------------------------
     def _new_order(self, book: dict, symbol: str, ticket_id: str, role: str, leg: dict, parent_id: str | None) -> dict:
-        oid = f"S{book['next_id']}"
+        oid = f"{ACCOUNTS[self.account_id]}{book['next_id']}"
         book["next_id"] += 1
         now = int(time.time())
         return {"id": oid, "ref": make_ref(ticket_id, role), "ticket_id": ticket_id, "role": role, "parent_id": parent_id,
@@ -291,9 +309,9 @@ class SimBroker(Broker):
         book["cash"] -= sign * qty * px + comm
         if pos["qty"] == 0:
             book["positions"].pop(o["symbol"], None)
-        fill = {"exec_id": f"SX{book['next_id']}", "order_id": o["id"], "ref": o["ref"], "symbol": o["symbol"],
+        fill = {"exec_id": f"{ACCOUNTS[self.account_id]}X{book['next_id']}", "order_id": o["id"], "ref": o["ref"], "symbol": o["symbol"],
                 "side": o["side"], "qty": qty, "price": round(px, 4), "time": now, "commission": comm,
-                "realized_pnl": round(realized, 2) if realized else None, "account": ACCOUNT_ID}
+                "realized_pnl": round(realized, 2) if realized else None, "account": self.account_id}
         book["next_id"] += 1
         book["fills"].append(fill)
         events.append(("order", dict(o)))

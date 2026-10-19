@@ -278,3 +278,9 @@ class BrokerConnection(BaseModel):
     host: str | None = None
     port: int | None = Field(None, ge=1, le=65535)
     client_id: int | None = Field(None, ge=0)
+    account: str | None = Field(None, max_length=32)
+
+
+class AccountSelect(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    account: str = Field(min_length=1, max_length=32)

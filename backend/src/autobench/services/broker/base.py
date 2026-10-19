@@ -71,8 +71,13 @@ class Broker:
         raise NotImplementedError
 
     def status(self) -> dict:
-        """{kind, connected, account, paper (bool|None), message, ...}"""
+        """{kind, connected, account, paper (bool|None), accounts [{id, paper}], message, ...}"""
         raise NotImplementedError
+
+    def select_account(self, account: str) -> None:
+        """Switch the account that reads and orders use (one login can hold several accounts)."""
+        if account != self.status().get("account"):
+            raise ValueError(f"Account {account} is not available")
 
     @property
     def connected(self) -> bool:

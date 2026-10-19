@@ -96,6 +96,7 @@ def _reset(server):
     th = {"X-Autobench": "1"}
     httpx.post(f"{server}/api/trading/resume", headers=th)
     httpx.put(f"{server}/api/trading/settings", json={"mode": "confirm"}, headers=th)
+    httpx.post(f"{server}/api/trading/account", json={"account": "SIM-PAPER"}, headers=th)
     httpx.post(f"{server}/api/trading/sim/reset", params={"cash": 100000}, headers=th)
 
 
@@ -510,6 +511,25 @@ def test_drawing_moves_between_layers(page, server):
     page.wait_for_function("__autobench.series() === 0 || !__autobench.chart.active().showPrice()")
 
 
+def test_wheel_over_an_axis_scales_only_that_axis(page):
+    box = chart_box(page)
+    page.wait_for_function("__autobench.bars() > 100")
+    pw = page.evaluate("__autobench.chart.active().plotWidth()")
+    spacing = page.evaluate("__autobench.chart.active().spacing()")
+    lo, hi = page.evaluate("__autobench.chart.active().priceRange()")
+    page.mouse.move(box["x"] + pw + 20, box["y"] + box["height"] * 0.4)  # price axis
+    page.mouse.wheel(0, -300)
+    page.wait_for_timeout(100)
+    lo2, hi2 = page.evaluate("__autobench.chart.active().priceRange()")
+    assert hi2 - lo2 < (hi - lo) * 0.8
+    assert page.evaluate("__autobench.chart.active().spacing()") == spacing  # time scale untouched
+    page.mouse.move(box["x"] + pw * 0.5, box["y"] + box["height"] - 8)  # time axis
+    page.mouse.wheel(0, -300)
+    page.wait_for_timeout(100)
+    assert page.evaluate("__autobench.chart.active().spacing()") > spacing * 1.3
+    assert page.evaluate("__autobench.chart.active().priceRange()") == [lo2, hi2]  # price scale untouched
+
+
 def test_reload_restores_zoom_prefs_and_panels(page, server):
     _open_layers(page)
     page.click(".tb.iv:text-is('1H')")
@@ -590,6 +610,23 @@ def test_agent_proposal_approval_and_trading_page(page, server):
     page.wait_for_selector(".trade-nav.halted")
     page.click("button[aria-label='Resume trading']")
     page.wait_for_selector(".tr-banner:empty", state="attached")
+
+
+def test_switch_account_from_trading_page(page, server):
+    sim_price(server, "AAPL", 100)
+    httpx.post(f"{server}/api/trading/orders", headers={"X-Autobench": "1"},
+               json={"symbol": "AAPL", "side": "buy", "qty": 5, "order_type": "limit", "limit_price": 101})
+    page.click("a.page-tab:has-text('Trading')")
+    page.wait_for_selector(".tr-body tr[data-symbol='AAPL']")
+    page.select_option(".tr-head select[aria-label='Account']", "SIM-PAPER-2")
+    page.wait_for_selector(".toast:has-text('Using account SIM-PAPER-2')")
+    page.wait_for_selector(".tr-body tr[data-symbol='AAPL']", state="detached")
+    assert httpx.get(f"{server}/api/trading/status").json()["account"] == "SIM-PAPER-2"
+    page.click("button[aria-label='Broker connection']")
+    assert page.input_value(".dialog select[aria-label='Account']") == "SIM-PAPER-2"
+    page.click(".dialog button:has-text('Cancel')")
+    page.select_option(".tr-head select[aria-label='Account']", "SIM-PAPER")
+    page.wait_for_selector(".tr-body tr[data-symbol='AAPL']")
 
 
 def test_chart_context_menu_and_close_position(page, server):

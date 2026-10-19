@@ -3,15 +3,16 @@
 from .base import DONE_STATUSES, OPEN_STATUSES, ORDER_TYPES, Broker, BrokerError, make_ref, parse_ref
 
 
-def create_broker(kind: str, host: str = "127.0.0.1", port: int = 4002, client_id: int = 7) -> Broker | None:
+def create_broker(kind: str, host: str = "127.0.0.1", port: int = 4002, client_id: int = 7,
+                  account: str | None = None) -> Broker | None:
     if kind == "sim":
         from .sim import SimBroker
 
-        return SimBroker()
+        return SimBroker(account=account)
     if kind == "ibkr":
         from .ibkr import IbkrBroker
 
-        return IbkrBroker(host, port, client_id)
+        return IbkrBroker(host, port, client_id, account)
     if kind in ("none", ""):
         return None
     raise ValueError(f"Unknown broker {kind!r} (use ibkr, sim or none)")

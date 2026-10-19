@@ -1338,6 +1338,8 @@ class ChartPanel {
     o['showPrice'] = (() => engine.showPrice.toJS).toJS;
     o['showVolume'] = (() => engine.showVolume.toJS).toJS;
     o['spacing'] = (() => engine.spacing.toJS).toJS;
+    o['priceRange'] = (() => [engine.priceRange().$1.toJS, engine.priceRange().$2.toJS].toJS).toJS;
+    o['plotWidth'] = (() => engine.plotWidth.toJS).toJS;
     o['priceLines'] = (() => engine.priceLines.length.toJS).toJS;
     o['tradeHits'] = (() => jsonEncode([
           for (final t in trading.hits) {'kind': t.kind, 'x': t.x + t.w / 2, 'y': t.y + t.hgt / 2, 'order': t.order?.id}

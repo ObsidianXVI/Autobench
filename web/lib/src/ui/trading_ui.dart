@@ -59,6 +59,8 @@ Future<void> reviewTicket(TTicket t) async {
       h('b.${t.side == 'buy' ? 'up' : 'down'}', t.summary),
       if (t.intent == 'close') h('span.badge.neutral', 'closes position'),
     ]),
+    if (trade.otherAccount(t))
+      h('div.check-msg.warn', 'Made for account ${t.account}. Switch to that account on the Trading page to approve it.'),
     h('div.ticket-levels', [
       if (t.stopLoss != null) h('span', [h('span.muted', 'Stop '), h('b.down', fmtPrice(t.stopLoss!))]),
       if (t.takeProfit != null) h('span', [h('span.muted', 'Target '), h('b.up', fmtPrice(t.takeProfit!))]),

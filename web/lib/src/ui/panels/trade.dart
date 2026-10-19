@@ -216,7 +216,9 @@ class TradePanel {
       if (st != null)
         h('span.acct-pill${!st.connected ? '.off' : st.isLive ? '.live' : ''}', [
           h('span.dot${st.connected ? '.ok' : '.warn'}'),
-          st.connected ? '${st.brokerLabel} ${st.isLive ? 'LIVE' : 'PAPER'}' : '${st.brokerLabel} offline',
+          st.connected
+              ? '${st.brokerLabel} ${st.isLive ? 'LIVE' : 'PAPER'}${st.multiAccount ? ' · ${st.account ?? ''}' : ''}'
+              : '${st.brokerLabel} offline',
         ], {'data-tip': st.connected ? 'Account ${st.account ?? ''}' : (st.message ?? ''), 'data-tip-pos': 'left'}),
       h('button.icon-btn', icon('external', size: 15), {'type': 'button', 'data-tip': 'Open the Trading page', 'aria-label': 'Open trading page'},
           {'click': (_) => store.page.value = 'trading'}),

@@ -272,6 +272,9 @@ class ChartEngine {
 
   (double, double) get visibleRange => (xToLogical(0), xToLogical(plotWidth));
 
+  /// Price range (lo, hi) of pane [pane].
+  (double, double) priceRange([int pane = 0]) => (_panes[pane].lo, _panes[pane].hi);
+
   /// Ensures at least [bars] empty bars to the right when the view is at the live edge.
   void ensureRightSpace(double bars) {
     final atEdge = xToLogical(plotWidth) >= _n - 1;
@@ -1252,14 +1255,26 @@ class ChartEngine {
           e.preventDefault();
           final unit = e.deltaMode == 1 ? 16.0 : e.deltaMode == 2 ? 400.0 : 1.0;
           final dx = e.deltaX * unit, dy = e.deltaY * unit;
-          final (x, _) = local(e);
-          if (dx.abs() > dy.abs() || e.shiftKey) {
+          final (x, y) = local(e);
+          final d = dx.abs() > dy.abs() ? dx : dy;
+          final k = e.ctrlKey ? 0.01 : 0.0015;
+          if (x > plotWidth && y < height - timeAxisHeight) {
+            // over a price axis: scale that pane's prices only, never the time scale
+            final pane = _paneAt(y);
+            if (pane != null) {
+              _scalePrice(pane, d * k / 0.005);
+              invalidate();
+            }
+          } else if (y > height - timeAxisHeight) {
+            // over the time axis: zoom time only (anchored at the cursor), no scrolling
+            _zoomAt(math.min(x, plotWidth), math.exp(-d * k));
+          } else if (dx.abs() > dy.abs() || e.shiftKey) {
             rightOffset += (dx.abs() > dy.abs() ? dx : dy) / spacing;
             _clampScroll();
             invalidate();
             _rangeChanged();
           } else {
-            _zoomAt(math.min(x, plotWidth), math.exp(-dy * (e.ctrlKey ? 0.01 : 0.0015)));
+            _zoomAt(math.min(x, plotWidth), math.exp(-dy * k));
           }
         }).toJS,
         AddEventListenerOptions(passive: false));

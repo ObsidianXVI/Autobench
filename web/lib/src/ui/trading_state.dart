@@ -112,8 +112,22 @@ class TradingState {
   Future<J> resume() => request('/api/trading/resume', method: 'POST');
   Future<J> arm() => request('/api/trading/arm', method: 'POST', body: {'confirm': 'LIVE'});
   Future<J> disarm() => request('/api/trading/disarm', method: 'POST');
-  Future<J> connect(String broker, {String? host, int? port, int? clientId}) => request('/api/trading/connect',
-      method: 'POST', body: {'broker': broker, 'host': ?host, 'port': ?port, 'client_id': ?clientId});
+  Future<J> connect(String broker, {String? host, int? port, int? clientId, String? account}) => request('/api/trading/connect',
+      method: 'POST', body: {'broker': broker, 'host': ?host, 'port': ?port, 'client_id': ?clientId, 'account': ?account});
+
+  /// Switches the account that reads, the order ticket and agent proposals use.
+  Future<void> selectAccount(String account) async {
+    final s = await request('/api/trading/account', method: 'POST', body: {'account': account});
+    status.value = TStatus.fromJson(s);
+    _changed();
+    refreshPending();
+  }
+
+  /// True when a ticket was made for an account other than the selected one (it cannot be approved here).
+  bool otherAccount(TTicket t) {
+    final cur = status.value?.account;
+    return t.account != null && cur != null && t.account != cur;
+  }
   Future<J> simReset(double cash) => request('/api/trading/sim/reset?cash=$cash', method: 'POST');
 }
 

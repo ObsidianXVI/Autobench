@@ -95,7 +95,10 @@ class TradingPage {
             h('span.dot${st.connected ? '.ok' : '.warn'}'),
             h('b', st.brokerLabel),
             if (st.connected) h('span.badge.${st.isLive ? 'down' : 'up'}', st.isLive ? 'LIVE' : 'PAPER'),
-            h('span.muted.small', st.connected ? (st.account ?? '') : (st.message ?? 'Not connected')),
+            if (st.connected && st.multiAccount)
+              _accountPicker(st)
+            else
+              h('span.muted.small', st.connected ? (st.account ?? '') : (st.message ?? 'Not connected')),
           ]);
     replace(_head, [
       h('h2', 'Trading'),
@@ -222,6 +225,30 @@ class TradingPage {
     }
   }
 
+  String _accountLabel((String, bool?) a) => '${a.$1} · ${a.$2 == false ? 'LIVE' : 'paper'}';
+
+  /// The accounts of the connected login; switching re-points the page, order ticket, chart and agent.
+  HTMLElement _accountPicker(TStatus st) {
+    late final HTMLSelectElement sel;
+    sel = h('select.input.select.small', [
+      for (final a in st.accounts) h('option', _accountLabel(a), {'value': a.$1}),
+    ], {'aria-label': 'Account', 'data-tip': 'Account used for orders, positions and agent proposals'},
+        {'change': (_) => _switchAccount(sel.value)}) as HTMLSelectElement;
+    sel.value = st.account ?? '';
+    return sel;
+  }
+
+  Future<void> _switchAccount(String account) async {
+    try {
+      await trade.selectAccount(account);
+      final st = trade.status.value;
+      toast('Using account $account${st?.isLive == true ? ' (LIVE, read-only until armed)' : ''}', ms: 2500);
+    } catch (e) {
+      toast('$e', kind: 'error');
+      _renderHead();
+    }
+  }
+
   void _connectionDialog() {
     final st = trade.status.value;
     final c = st?.connection ?? const J(null);
@@ -229,6 +256,21 @@ class TradingPage {
     final host = h('input.input', null, {'value': c['host'].s ?? '127.0.0.1', 'aria-label': 'Host'}) as HTMLInputElement;
     final port = h('input.input', null, {'type': 'number', 'value': '${c['port'].i ?? 4002}', 'aria-label': 'Port'}) as HTMLInputElement;
     final client = h('input.input', null, {'type': 'number', 'value': '${c['client_id'].i ?? 7}', 'aria-label': 'Client id'}) as HTMLInputElement;
+    // Accounts are only known once a login is connected; a saved account missing from the next login falls
+    // back to that login's first account.
+    final accts = st?.accounts ?? const <(String, bool?)>[];
+    final account = h('select.input.select', [
+      h('option', accts.isEmpty ? 'First account in the login' : 'Default (first account)', {'value': ''}),
+      for (final a in accts) h('option', _accountLabel(a), {'value': a.$1}),
+    ], {'aria-label': 'Account'}) as HTMLSelectElement;
+    account.value = st?.account ?? c['account'].s ?? '';
+    final accountRow = h('label.field-col', [
+      h('span', 'Account'),
+      account,
+      h('span.muted.tiny', accts.length > 1
+          ? 'This login holds ${accts.length} accounts. You can also switch from the Trading page header.'
+          : 'Logins with several accounts (e.g. individual + IRA, or advisor sub-accounts) can pick one here once connected.'),
+    ]);
     final ibkr = h('div.form-grid', [
       h('div.row.gap', [
         h('label.field-col', [h('span', 'Host'), host]),
@@ -245,9 +287,9 @@ class TradingPage {
     ]);
     final sim = h('div.form-grid', [
       h('div.muted.small', 'A local paper account that fills orders at the latest quote. Good for trying the workflow.'),
-      h('button.btn.small', 'Reset simulator to \$100,000…', {'type': 'button'}, {
+      h('button.btn.small', 'Reset this simulator account to \$100,000…', {'type': 'button'}, {
         'click': (_) async {
-          if (!await confirmDialog('Reset simulator', 'Delete simulated positions, orders, fills and history?', confirm: 'Reset', danger: true)) return;
+          if (!await confirmDialog('Reset simulator', 'Delete this simulated account\'s positions, orders, fills and history?', confirm: 'Reset', danger: true)) return;
           await attempt(trade.simReset(100000));
           toast('Simulator reset', ms: 2000);
         },
@@ -266,14 +308,16 @@ class TradingPage {
       ]);
       ibkr.isHidden = broker != 'ibkr';
       sim.isHidden = broker != 'sim';
+      accountRow.isHidden = broker == 'none' || (broker != (st?.kind ?? '') && accts.isNotEmpty);
     }
 
     renderSeg();
-    Dialog.open('Broker connection', h('div.form-grid', [seg, ibkr, sim]), width: '560px', actions: [
+    Dialog.open('Broker connection', h('div.form-grid', [seg, ibkr, sim, accountRow]), width: '560px', actions: [
       const DialogAction('Cancel'),
       DialogAction('Connect', primary: true, onPressed: () async {
         try {
-          await trade.connect(broker, host: host.value, port: int.tryParse(port.value), clientId: int.tryParse(client.value));
+          await trade.connect(broker, host: host.value, port: int.tryParse(port.value), clientId: int.tryParse(client.value),
+              account: account.value.isEmpty ? null : account.value);
           await Future<void>.delayed(const Duration(milliseconds: 800));
           await trade.refresh();
           return true;
@@ -571,6 +615,9 @@ class TradingPage {
               h('span.spacer'),
               h('span.muted.tiny', t.expiresAt == null ? '' : 'expires ${_time(t.expiresAt!)}'),
             ]),
+            if (trade.status.value?.multiAccount == true || trade.otherAccount(t))
+              h('div.small${trade.otherAccount(t) ? '.warn-text' : '.muted'}',
+                  trade.otherAccount(t) ? 'For account ${t.account}; switch to it to approve' : 'Account ${t.account ?? ''}'),
             h('div.row.gap.small', [
               if (t.stopLoss != null) h('span', ['Stop ', h('b.down', fmtPrice(t.stopLoss!))]),
               if (t.takeProfit != null) h('span', ['Target ', h('b.up', fmtPrice(t.takeProfit!))]),

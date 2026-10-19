@@ -300,7 +300,8 @@ class TradingService:
         saved = db.state_get(CONNECTION_KEY) or {}
         return {"broker": saved.get("broker") or s.autobench_broker, "host": saved.get("host") or s.ibkr_host,
                 "port": saved.get("port") or s.ibkr_port,
-                "client_id": saved.get("client_id") if saved.get("client_id") is not None else s.ibkr_client_id}
+                "client_id": saved.get("client_id") if saved.get("client_id") is not None else s.ibkr_client_id,
+                "account": saved.get("account") or s.ibkr_account or None}
 
     def start(self) -> None:
         """Create and connect the configured broker (idempotent)."""
@@ -309,7 +310,7 @@ class TradingService:
                 return
             c = self.connection()
             self._kind = c["broker"]
-            self.broker = create_broker(c["broker"], c["host"], int(c["port"]), int(c["client_id"]))
+            self.broker = create_broker(c["broker"], c["host"], int(c["port"]), int(c["client_id"]), c["account"])
             if self.broker is None:
                 return
             self.broker.add_listener(self._on_broker_event)
@@ -328,8 +329,11 @@ class TradingService:
             except Exception:
                 pass
 
-    def reconnect(self, broker: str, host: str | None = None, port: int | None = None, client_id: int | None = None) -> dict:
+    def reconnect(self, broker: str, host: str | None = None, port: int | None = None, client_id: int | None = None,
+                  account: str | None = None) -> dict:
         saved = {"broker": broker}
+        if account or (db.state_get(CONNECTION_KEY) or {}).get("account"):  # keep the chosen account across reconnects
+            saved["account"] = account or db.state_get(CONNECTION_KEY)["account"]
         if host:
             saved["host"] = host
         if port:
@@ -342,6 +346,24 @@ class TradingService:
         self._audit("user", "connect", details=saved)
         self._publish_status()
         return self.status()
+
+    def select_account(self, account: str) -> dict:
+        """User only: switch the account that the Trading page, order ticket and agent use. Disarms live
+        trading (arming is per account); proposals made for another account cannot be approved here."""
+        b = self._broker()
+        prev = b.status().get("account")
+        b.select_account(account)
+        saved = db.state_get(CONNECTION_KEY) or {"broker": self._kind}
+        db.state_set(CONNECTION_KEY, {**saved, "account": account})
+        if prev != account:
+            self._armed = False
+            self._audit("user", "account", details={"from": prev, "to": account})
+            self._worker.submit(self._on_connected)  # sync fills and snapshot equity of the new account
+        self._publish_status()
+        return self.status()
+
+    def _current_account(self) -> str | None:
+        return self.broker.status().get("account") if self.broker else None
 
     def _broker(self) -> Broker:
         if not self.enabled_here:
@@ -572,6 +594,9 @@ class TradingService:
         t = self.ticket(ticket_id)
         if t["status"] != "pending":
             raise ValueError(f"Ticket is {t['status']}, not pending")
+        cur = self._current_account()
+        if t.get("account") and cur and t["account"] != cur:
+            raise ValueError(f"This proposal was made for account {t['account']}; switch to that account to approve it")
         spec = OrderSpec.model_validate(t["spec"])
         check = self.preview(spec, "user")
         if not check["ok"]:
@@ -845,7 +870,8 @@ class TradingService:
                 self._audit("system", "fill", data["symbol"], parse_ref(data.get("ref"))[0],
                             {k: data[k] for k in ("side", "qty", "price", "order_id")})
                 bus.publish("trading.fill", data)
-                self._worker.submit(self._after_fill, data["symbol"], data["side"])
+                if not data.get("account") or data["account"] == self._current_account():
+                    self._worker.submit(self._after_fill, data["symbol"], data["side"])
         elif kind == "account":
             self._push_account()
         elif kind == "status":
@@ -963,11 +989,13 @@ class TradingService:
         return b
 
     def reset_local_history(self) -> None:
-        """Simulator reset: forget simulated fills, tickets and equity (never touches IBKR data)."""
+        """Simulator reset: forget the selected simulated account's fills, tickets and equity (never touches
+        IBKR data)."""
+        acct = self.sim().account_id
         with db.session_scope() as s:
-            s.execute(delete(db.FillRow).where(db.FillRow.broker == "sim"))
-            s.execute(delete(db.EquityRow).where(db.EquityRow.account == "SIM-PAPER"))
-            s.execute(delete(db.OrderTicketRow).where(db.OrderTicketRow.broker == "sim"))
+            s.execute(delete(db.FillRow).where(db.FillRow.broker == "sim", db.FillRow.account == acct))
+            s.execute(delete(db.EquityRow).where(db.EquityRow.account == acct))
+            s.execute(delete(db.OrderTicketRow).where(db.OrderTicketRow.broker == "sim", db.OrderTicketRow.account == acct))
 
 
 trading = TradingService()

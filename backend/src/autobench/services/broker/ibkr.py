@@ -138,14 +138,16 @@ def map_position(item) -> dict:
 class IbkrBroker(Broker):
     kind = "ibkr"
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 4002, client_id: int = 7):
+    def __init__(self, host: str = "127.0.0.1", port: int = 4002, client_id: int = 7, account: str | None = None):
         super().__init__()
         self.host, self.port, self.client_id = host, port, client_id
+        self._preferred = account or None  # the account to use when the login holds several
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self.ib = None
         self._want = False
         self._account: str | None = None
+        self._accounts: list[str] = []
         self._message = "Not connected"
         self._last_attempt = 0.0
         self._failures = 0
@@ -238,12 +240,12 @@ class IbkrBroker(Broker):
                 self.emit("status", self.status())
             return
         self._failures = 0
-        accounts = self.ib.managedAccounts()
-        self._account = accounts[0] if accounts else None
+        self._accounts = list(self.ib.managedAccounts())
+        choice = self._preferred if self._preferred in self._accounts else (self._accounts[0] if self._accounts else None)
+        self._account = None
         self._message = "Connected"
         try:
-            if self._account:
-                self.ib.reqPnL(self._account)
+            await self._use_account(choice)
             await self.ib.reqAllOpenOrdersAsync()  # include orders placed in TWS / other clients
         except Exception as e:
             log.info("IBKR post-connect requests failed: %s", e)
@@ -251,10 +253,42 @@ class IbkrBroker(Broker):
         self.emit("status", self.status())
         self.emit("account", None)
 
+    async def _use_account(self, account: str | None) -> None:
+        """Point the portfolio / account-value / P&L subscriptions at one account. IBKR streams portfolio
+        updates for a single account at a time; ib_async only subscribes by itself when the login has one."""
+        old, self._account = self._account, account
+        if not account:
+            return
+        if old and old != account:
+            try:
+                self.ib.cancelPnL(old)
+            except Exception:
+                pass
+        if len(self._accounts) > 1 or (old and old != account):
+            await asyncio.wait_for(self.ib.reqAccountUpdatesAsync(account), 10)
+        if not self.ib.pnl(account):
+            self.ib.reqPnL(account)
+
+    def select_account(self, account: str) -> None:
+        self._require()
+        if account not in self._accounts:
+            raise ValueError(f"Account {account} is not in this IBKR login (available: {', '.join(self._accounts) or 'none'})")
+        self._preferred = account
+        if account != self._account:
+            self._call(lambda: self._use_account(account), timeout=20)
+            log.info("IBKR: using account %s (%s)", account, "paper" if is_paper_account(account) else "LIVE")
+        self.emit("status", self.status())
+        self.emit("account", None)
+
+    def _mine(self, account: str | None) -> bool:
+        """Orders and fills of the selected account (an empty account means the login's only one)."""
+        return len(self._accounts) <= 1 or not account or account == self._account
+
     def status(self) -> dict:
         connected = bool(self.ib and self.ib.isConnected())
         return {"kind": self.kind, "connected": connected, "account": self._account if connected else None,
                 "paper": is_paper_account(self._account) if connected else None,
+                "accounts": [{"id": a, "paper": is_paper_account(a)} for a in self._accounts] if connected else [],
                 "message": self._message if not connected else ("Connected" if self._message == "Connected" else self._message),
                 "host": self.host, "port": self.port, "client_id": self.client_id}
 
@@ -320,13 +354,14 @@ class IbkrBroker(Broker):
 
         def read():
             trades = self.ib.trades() if include_done else self.ib.openTrades()
-            return [self._map(t) for t in trades if t.contract.secType == "STK"]
+            return [self._map(t) for t in trades if t.contract.secType == "STK" and self._mine(t.order.account)]
 
         return self._call(read)
 
     def fills(self) -> list[dict]:
         self._require()
-        return self._call(lambda: [map_fill(f) for f in self.ib.fills() if f.contract.secType == "STK"])
+        return self._call(lambda: [map_fill(f) for f in self.ib.fills()
+                                   if f.contract.secType == "STK" and self._mine(f.execution.acctNumber)])
 
     # --- writes -----------------------------------------------------------------------------------
     async def _contract(self, symbol: str):

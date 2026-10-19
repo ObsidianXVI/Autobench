@@ -56,7 +56,7 @@ part of the codebase, and its only dependency is `package:web`. For UI developme
 ### The workbench
 - **Chart**: 1-4 synced charts (symbol, interval, crosshair and range sync), candles, hollow candles,
   bars, line, area and Heikin-Ashi, regular/log/percent scales, compare overlays, earnings markers and
-  41 indicators with per-pane legends (hide, settings, remove). Drag the price or time axis to scale,
+  41 indicators with per-pane legends (hide, settings, remove). Drag or scroll over the price or time axis to scale that axis only,
   drag pane separators, double-click the price axis to auto-scale. Layouts save and load by name.
 - **Layers, remembered per symbol**: each symbol's chart is a stack of layers. A layer holds series
   (the price chart, volume bars, indicators, other symbols as a line, area or candles, in the main
@@ -110,6 +110,12 @@ runs on deterministic synthetic data, which needs no network.
 2. `autobench start`. It connects to `IBKR_HOST:IBKR_PORT` (default `127.0.0.1:4002`) and reconnects on
    its own when Gateway restarts. Change the broker, port or client id on the **Trading** page
    (*Connection*), or pick the **Simulator** to try everything without IBKR.
+3. If the login holds several accounts (individual + IRA, advisor sub-accounts, …), pick one from the
+   account menu in the Trading page header or in *Connection*; positions, orders, history, the order
+   ticket and agent proposals all follow it, and the choice is remembered (`IBKR_ACCOUNT` sets the
+   default). Switching disarms live trading, and a proposal can only be approved on the account it was
+   made for. Paper and live are separate Gateway logins (ports 4002 / 4001); switch between them with
+   the port presets in *Connection*. The simulator has two accounts to try this.
 
 What you get:
 - **Order ticket** (right dock, ⇅): buy/sell, limit / market / stop / stop-limit, sizing by shares,

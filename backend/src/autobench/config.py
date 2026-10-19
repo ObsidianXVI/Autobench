@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     ibkr_host: str = "127.0.0.1"
     ibkr_port: int = 4002  # IB Gateway paper (live 4001); TWS paper 7497 (live 7496)
     ibkr_client_id: int = 7
+    ibkr_account: str = ""  # preferred account when the login holds several; the app can switch it
     autobench_allow_live_trading: bool = False
 
     @property

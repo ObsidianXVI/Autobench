@@ -164,7 +164,7 @@ class TPosition {
 class TTicket {
   final String id, symbol, source, status;
   final J spec, check;
-  final String? rationale, message, createdAt, expiresAt;
+  final String? rationale, message, createdAt, expiresAt, account;
   final List<String> orderIds;
 
   const TTicket({
@@ -178,6 +178,7 @@ class TTicket {
     this.message,
     this.createdAt,
     this.expiresAt,
+    this.account,
     this.orderIds = const [],
   });
 
@@ -192,6 +193,7 @@ class TTicket {
         message: j['message'].s,
         createdAt: j['created_at'].s,
         expiresAt: j['expires_at'].s,
+        account: j['account'].s,
         orderIds: [for (final x in j['order_ids'].list) x.s ?? ''],
       );
 
@@ -282,6 +284,9 @@ class TStatus {
   final int pendingTickets;
   final J connection, halt;
 
+  /// Accounts in the broker login: (id, paper). One login can hold several.
+  final List<(String, bool?)> accounts;
+
   const TStatus({
     required this.kind,
     required this.connected,
@@ -296,6 +301,7 @@ class TStatus {
     this.pendingTickets = 0,
     this.connection = const J(null),
     this.halt = const J(null),
+    this.accounts = const [],
   });
 
   factory TStatus.fromJson(J j) => TStatus(
@@ -312,9 +318,11 @@ class TStatus {
         pendingTickets: j['pending_tickets'].i ?? 0,
         connection: j['connection'],
         halt: j['halt'],
+        accounts: [for (final a in j['accounts'].list) (a['id'].s ?? '', a['paper'].b)],
       );
 
   bool get isLive => paper == false;
+  bool get multiAccount => accounts.length > 1;
   String get brokerLabel => kind == 'ibkr' ? 'IBKR' : kind == 'sim' ? 'Simulator' : 'No broker';
 }
 
