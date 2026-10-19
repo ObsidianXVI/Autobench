@@ -41,11 +41,15 @@ A recommendation without a plan is an opinion. Plans are built from **levels** (
   the plan explicitly an earnings play (see `earnings-preview`). Stops do not protect against gaps.
 - Ex-dividend dates, index rebalances, FOMC/CPI for high-beta names.
 
+- Check `get_earnings_calendar(symbols=[symbol])` and `get_economic_calendar(days=<horizon>)` for dated
+  catalysts rather than relying on memory.
+
 ## 6. Management rules (state them)
 - Partial at T1, move stop to breakeven (or below the new higher low).
 - Time stop: exit if no progress within ~½ of the horizon.
 - Thesis invalidation beats price stops: if the reason for the trade disappears (e.g. guidance cut),
   exit even if the stop isn't hit.
+- Put the levels on alert (`create_alert`): entry trigger, stop, first target. Alerts fire in the user's UI.
 
 ## Output block
 ```

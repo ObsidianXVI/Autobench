@@ -24,12 +24,20 @@ backend/src/autobench/
   providers/        alpaca.py (bars/quotes/news/assets), yahoo.py (fallback + index symbols), fake.py (tests)
   services/         market (bar cache), indicators (registry), expressions (safe DSL), backtest,
                     levels, patterns, technicals, risk, fundamentals, options, filings (SEC), news,
-                    market_context, annotations, analyses (outcome tracking), workspace, events (bus)
+                    market_context, annotations, analyses (outcome tracking), workspace (view, notes,
+                    watchlists, layouts, ui-state), events (bus), universe (all-US-stock layers:
+                    listings, SEC-frame fundamentals, bar matrix, live quotes), screener (fields,
+                    filters, expressions, heatmap, breadth), macro (FRED/Treasury/BLS, cross-asset,
+                    calendars), alerts, scheduler (background refresh + alert checks)
+  providers/reference.py  Nasdaq listings/calendars, Wikipedia S&P 500, SEC frames, FRED, Treasury, BLS
 backend/tests/      pytest suite (fake provider, no network); live smoke tests: `pytest -m live`
 web/                Dart web UI compiled to JS with dart2js (only dependency: package:web)
   lib/src/core/     pure Dart, no browser APIs: models, NY time/DST, scales/ticks, formatting, markdown
-  lib/src/chart/    canvas chart engine (engine.dart), drawings layer (annotations.dart), chart_view.dart
-  lib/src/ui/       app state + components (topbar, toolbar, sidebar), REST client, WebSocket events
+  lib/src/chart/    engine.dart (canvas chart), annotations.dart (drawings + handles), chart_panel.dart
+                    (one chart), chart_page.dart (toolbars, grid, shortcuts), drawing_ops.dart (undo)
+  lib/src/ui/       app.dart (shell, routing, events), store.dart (state), kit/ (Obs, overlays, icons,
+                    sparklines), panels/ (dock, watchlist, details, alerts, news, agent/notes/objects),
+                    pages/ (screener, heatmap, markets, calendar), pickers.dart, api.dart
   static/           index.html, styles.css, favicon (copied into build/)
   tool/build.dart   build script; test/core_test.dart unit tests (plain `dart run`)
 ```
@@ -53,7 +61,12 @@ web/                Dart web UI compiled to JS with dart2js (only dependency: pa
   return plain dicts (they are serialised compactly), raise `ValueError` for user-fixable input problems.
 - Service functions raise `ValueError` (bad input → 400 / tool error), `KeyError` (not found → 404),
   `ProviderError` (upstream failure → 502).
+- Background work runs only under `autobench serve` (AUTOBENCH_BACKGROUND=1, default); tests set it to 0.
+- Universe layers persist under `<db dir>/universe/*.pkl`; `POST /api/universe/refresh?parts=` rebuilds.
 - Dart/JS interop gotchas: compiled Dart lists are JS arrays and pass `is Node`/`is JSObject` checks (test
   iterables first); package:web types `MouseEvent.clientX` as int (read the raw double) and `hidden` as JSAny
-  (use the `isHidden` extension); `toJS` closures must have JS-compatible signatures (no Future returns).
+  (use the `isHidden` extension); `toJS` closures must have JS-compatible signatures (no Future returns —
+  dart analyze does not catch this, dart2js does); `.then(v, onError: (_) {})` on a non-nullable future
+  throws at runtime – use `attempt()` from api.dart. When checking a rebuilt UI in a browser, reload with
+  a query string: a hash-only navigation keeps the old bundle.
 - Config via `.env` at the repo root (see `.env.example`). Never commit `.env`.

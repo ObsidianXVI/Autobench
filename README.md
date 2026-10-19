@@ -1,15 +1,21 @@
 # Autobench
 
-A stock research workbench for US equities that an AI agent can operate. It covers charts,
-41 technical indicators, fundamentals, SEC filings, options and news. It also includes
-quantitative testing tools, and an MCP server through which an agent reads all of it, draws
-on your live chart and records recommendations that are later graded against real prices.
+A stock research workbench for US equities that an AI agent can operate. It combines
+TradingView-style charting (multi-chart layouts, drawing tools, alerts) with FinViz-style market
+data: a screener over every US-listed stock, a sector heatmap, market breadth, a macro dashboard and
+earnings/economic calendars. It also has 41 technical indicators, fundamentals, SEC filings,
+options, news and quantitative testing tools. An MCP server gives an AI agent the same data: it
+can screen the market, draw on your live chart, set alerts and open pages for you. Its
+recommendations are recorded and later graded against real prices.
 
 ```
- Alpaca (bars, quotes, news, symbols)  ─┐
- Yahoo (fundamentals, options, indices) ├─▶  backend (FastAPI)  ──REST/WebSocket──▶  web UI (chart)
- SEC EDGAR (filings, XBRL history)     ─┘     │  SQLite: bar cache, drawings, analyses, notes
-                                              └──MCP /mcp──▶  AI agent (Claude Code + skills)
+ Alpaca (bars, quotes, snapshots, news)   ─┐
+ Yahoo (fundamentals, options, indices,    │
+        futures, FX, crypto)               │
+ SEC EDGAR (filings, XBRL frames)          ├─▶ backend (FastAPI) ──REST/WebSocket──▶ web UI (Dart)
+ Nasdaq (listings, calendars) · Wikipedia  │      │  SQLite + universe cache: bars, drawings,
+   (S&P 500 GICS) · FRED · Treasury · BLS ─┘      │  alerts, analyses, notes, layouts
+                                                  └──MCP /mcp──▶ AI agent (Claude Code + skills)
 ```
 
 ## Quick start
@@ -26,14 +32,42 @@ The web UI is written in Dart and compiled to JavaScript (no npm or Node). Its c
 part of the codebase, and its only dependency is `package:web`. For UI development, run
 `dart run tool/build.dart --watch` in `web/` and reload the page after each rebuild.
 
-### Using the chart
-- Search a ticker, pick an interval, and add indicators with **ƒx Indicators**. The indicator set is
-  shared state, so the agent can change it too.
-- Draw with the left toolbar: trend line, ray, horizontal and vertical lines, zone, Fibonacci,
-  measure, arrow, long/short position, and text. Clicks snap to the nearest OHLC price.
-  **Delete** removes the selected drawing and **Esc** cancels.
-- Agent drawings are marked ✦ and colored violet by default. The **Agent** tab shows live activity,
-  saved recommendations with their graded outcomes, and the track record.
+### The workbench
+- **Chart**: 1-4 synced charts (symbol, interval, crosshair and range sync), candles, hollow candles,
+  bars, line, area and Heikin-Ashi, regular/log/percent scales, compare overlays, earnings markers and
+  41 indicators with per-pane legends (hide, settings, remove). Drag the price or time axis to scale,
+  drag pane separators, double-click the price axis to auto-scale. Layouts save and load by name.
+- **Drawing tools** (left bar): trend line, ray, extended and horizontal/vertical lines, parallel
+  channel, Fibonacci, rectangle, arrow, text, callout, marker, measure and long/short positions. They
+  have a magnet (snap to OHLC), stay-in-drawing mode and lock/hide-all. Select a drawing to drag it or
+  its points. A floating toolbar then sets color, width and style, edits text, adds a line alert,
+  locks, clones, hides or deletes it, with undo/redo for all of these.
+- **Keyboard** (TradingView-style): start typing a ticker to search, type a number for the interval,
+  `/` indicators, `Alt+T/H/J/V/F/L/S` tools, `Alt+A` alert, `Alt+R` reset, `Del`, `Esc`, `⌘Z/⇧⌘Z`,
+  `⌘S` save layout, arrows to scroll/zoom, `?` for the full list. Right-click the chart or a drawing
+  for context actions.
+- **Right dock**: watchlists (sections, sorting, live quotes, keyboard navigation, drag to reorder)
+  with symbol details below, plus alerts, news, the agent's activity and graded calls, notes, and
+  an object tree.
+- **Screener**: FinViz-style dropdown filters (descriptive, valuation, financial, performance,
+  technical), a filter-expression bar (`pe < 25 and sales_qoq > 15 and sma200_pct > 0`), preset
+  signals and screens, column views, chart previews on hover, a Charts tile view, saved screens, CSV
+  export and add-to-watchlist.
+- **Heatmap**: S&P 500 or the top 1,000 US stocks by sector and industry, sized by market cap and
+  colored by 1D…1Y change. Click a sector to drill in, hover for industry peers.
+- **Markets**: headline instruments, breadth, signal tables (gainers, losers, highs, lows, unusual
+  volume …), sector performance, a cross-asset board (futures, rates, FX, crypto, global, factors,
+  bonds), and a macro dashboard (rates and the yield curve, inflation, labor, growth, credit, housing)
+  with full history charts. Today's economic releases, this week's earnings and market news are
+  alongside.
+- **Calendar**: weekly earnings board (before/after market, EPS estimates) and the economic calendar.
+- **Agent drawings** are marked ✦ and colored violet. The agent can also switch your chart, open
+  the screener with its filters, create alerts, and save screens and notes; everything appears live.
+
+The market universe has about 6,000 stocks. Its first build takes about a minute (listings, SEC
+fundamentals, a year of daily bars). After that it stays fresh in the background: prices every
+minute while you use the screener, bars every 10 minutes in market hours, and fundamentals daily.
+Alerts are checked every 20 seconds.
 
 Without Alpaca keys, bars and quotes fall back to Yahoo automatically. `AUTOBENCH_BAR_PROVIDER=fake`
 runs on deterministic synthetic data, which needs no network.
@@ -47,7 +81,7 @@ runs on deterministic synthetic data, which needs no network.
 - **stdio-only clients** (e.g. Claude Desktop): command `backend/.venv/bin/autobench`, args `["mcp-stdio"]`.
   Drawings are relayed to a running `autobench serve`, so the chart still updates live.
 
-## What the agent can do (48 MCP tools)
+## What the agent can do (62 MCP tools)
 
 | Area | Tools |
 |---|---|
@@ -57,6 +91,9 @@ runs on deterministic synthetic data, which needs no network.
 | Fundamentals | get_fundamentals, get_financial_statements, get_financial_history (SEC XBRL, 15y), get_earnings, get_analyst_ratings, get_ownership, compare_peers |
 | Research | get_news, get_options_overview, get_option_chain, list_sec_filings, read_sec_filing (10-K/10-Q sections), get_filing_documents, get_research_brief |
 | Chart | get_chart_view, set_chart_view, draw_annotations (17 drawing types incl. trade plans), list/update/delete_annotations |
+| Market-wide | screen_stocks (~6,000 stocks, 70 fields, filters/expressions/signals), get_stock_snapshot, get_market_breadth, get_sector_performance, save_screen |
+| Macro & calendars | get_macro_dashboard (FRED/Treasury/BLS), get_macro_series, get_cross_asset_board, get_earnings_calendar, get_economic_calendar |
+| Alerts & UI | create_alert (price, crossing, daily change, indicator condition), list_alerts, delete_alert, show_in_ui |
 | Memory | save_analysis, list_analyses, get_analysis, get_track_record (hit rate, R, alpha, Brier calibration), save_note, search_notes, watchlists, scan_watchlist |
 
 Strategies and conditions use a safe expression language, for example
@@ -78,8 +115,15 @@ cd backend && .venv/bin/python -m pytest -q        # offline suite
 UI: `cd web && dart run test/core_test.dart` (unit tests). For end-to-end tests in headless Chrome, run
 `pip install -e ".[ui-test]"` and then `pytest -q tests/test_ui_e2e.py`.
 
-The offline suite checks indicators against reference values, verifies the backtester's exact fills
-on hand-built price paths, tests the Alpaca client against mocked HTTP, and covers the API,
-WebSocket and MCP end to end.
+The offline suite does the following:
+- checks indicators against reference values
+- verifies the backtester's exact fills on hand-built price paths
+- tests the Alpaca client against mocked HTTP, including feed fallback under concurrency
+- checks the TTM fundamentals arithmetic for calendar and off-calendar fiscal years
+- checks the vectorized screener technicals against the reference indicators
+- covers the API, WebSocket and MCP end to end
+
+The UI suite drives the compiled app in headless Chrome. It covers the agent controlling the chart,
+drawing, dragging and undoing, alerts, layouts, every page, mobile width and the light theme.
 
 *Research tooling, not financial advice.*

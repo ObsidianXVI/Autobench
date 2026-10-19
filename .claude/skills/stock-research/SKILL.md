@@ -20,7 +20,11 @@ If the server is unreachable, tell the user to start it: `cd backend && .venv/bi
 ## 1. Orientation (2-3 calls)
 - `get_research_brief(symbol)` — quote, brief technicals, fundamentals, earnings date, consensus, news,
   sector-relative strength, prior work.
-- `get_market_overview()` — regime. A long in a stressed tape needs a higher bar.
+- `get_market_overview()` — regime (add `get_market_breadth()` when the tape looks narrow or stretched).
+  A long in a stressed tape needs a higher bar.
+- `get_stock_snapshot(symbol)` — every screener field in one call (valuation, TTM growth and margins,
+  performance, 52-week range, relative volume). Rank the stock against its industry with
+  `screen_stocks(expression='industry == "<its industry>"', sort="-market_cap", columns=[...])`.
 - Note the **next earnings date**. If it falls inside the horizon, it is a primary risk (see
   `earnings-preview` skill).
 
@@ -88,6 +92,9 @@ Check `get_track_record()` occasionally; if your past calibration is overconfide
 3. `save_analysis({...})` with every field, `annotation_tag` = the tag, rationale in markdown
    (evidence tables + bull/bear + test results).
 4. `save_note` for durable facts: thesis, key dates (earnings, product events), data quirks.
+5. Alerts for the plan's levels so the user hears about them live: `create_alert(symbol, "crosses",
+   value=<entry or breakout level>, message="…")` and `create_alert(symbol, "below", value=<stop>, message=
+   "Stop level – thesis invalidated?")`. Mention them in the report.
 
 ## 10. Report to the user (this order)
 1. **Verdict** — action, horizon, confidence, one-sentence thesis.

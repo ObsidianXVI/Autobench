@@ -6,6 +6,8 @@ description: Pre- or post-earnings analysis for a stock — beat/miss history, c
 # Earnings preview / review
 
 ## Before the report
+0. Who reports when: `get_earnings_calendar(days=7, universe="sp500")` (BMO/AMC, consensus EPS) – peers
+   reporting first often move the stock (read-through).
 1. `get_earnings(symbol)` — next date; last 8 quarters: estimate vs actual, surprise %, beat rate;
    consensus EPS/revenue for 0q with low/high range (dispersion = uncertainty); `eps_trend` (7/30/60/90
    day drift) and `eps_revisions` (up vs down counts). Rising estimates into the print = bar is higher
