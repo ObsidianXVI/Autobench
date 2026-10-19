@@ -73,7 +73,10 @@ ANNOTATIONS = "Drawing types (draw_annotations):\n" + "\n".join(f"  {k}: {v}" fo
 Points: {"time": "2025-03-14" | "2025-03-14T10:30-04:00" | epoch, "price": 123.45}
 Optional per drawing: text, style {color, line_width 1-6, line_style solid|dashed|dotted, fill_color,
 text_color, font_size, extend_left, extend_right, shape, position, show_labels}, interval (limit to
-one timeframe), tag (group).
+one timeframe), tag (group). Text on a line, shape or marker is shown only while the user hovers or
+selects that drawing; put anything they must see at a glance in a text or callout drawing, which
+stays visible (unless the user unticks "Text" in the chart toolbar). Labels that would overlap are
+moved aside automatically, so keep them short.
 
 Colour conventions (keep consistent so the user can read the chart at a glance):
   support / bullish  #22c55e (zones rgba(34,197,94,0.12))     resistance / bearish  #ef4444 (rgba(239,68,68,0.12))

@@ -116,6 +116,18 @@ Future<void> main() async {
     check('past segment end', segDist(const XY(13, 4), const XY(0, 0), const XY(10, 0)), 5.0);
     check('line extension', lineAt(const XY(0, 0), const XY(10, 10), 20).y, 20.0);
     check('hex alpha', hexAlpha('#22c55e', 0.5), 'rgba(34,197,94,0.5)');
+    final lay = LabelLayout();
+    final a = lay.place(const Box(0, 100, 50, 18));
+    final b = lay.place(const Box(10, 105, 50, 18));
+    check('first label stays', a.t, 100.0);
+    check('overlapping label moves to the nearest clear side', [b.t, b.overlaps(a)], [120.0, false]);
+    final c = lay.place(const Box(20, 104, 50, 18));
+    check('third label goes above', [c.t, c.overlaps(a), c.overlaps(b)], [80.0, false, false]);
+    check('separate lanes do not move', lay.place(const Box(200, 100, 50, 18)).t, 100.0);
+    check('direction limit', lay.place(const Box(0, 101, 50, 18), dir: 1).t, 140.0);
+    final row = LabelLayout()..reserve(const Box(100, 0, 40, 18));
+    check('horizontal move to the left', row.place(const Box(110, 2, 40, 18), vertical: false, dir: -1).l, 58.0);
+    check('bounds respected', (LabelLayout()..reserve(const Box(0, 0, 50, 18))).place(const Box(0, 5, 50, 18), lo: 0).t, 20.0);
   });
 
   group('json and models', () {

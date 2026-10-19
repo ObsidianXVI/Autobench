@@ -134,6 +134,7 @@ class ChartPanel {
     layer = AnnotationLayer(engine);
     trading = TradingOverlay(engine);
     engine.topOverlay = trading.draw;
+    engine.reserveLabels = trading.reserve;
     engine.onClick = _click;
     engine.onDoubleClick = _doubleClick;
     engine.onCrosshair = _move;
@@ -167,7 +168,11 @@ class ChartPanel {
     _scope.listen(store.drawingsHidden, (h) {
       layer.hidden = h;
       layer.update();
-    });
+    }, now: true);
+    _scope.listen(store.textShown, (v) {
+      layer.showText = v;
+      layer.update();
+    }, now: true);
     _scope.listen(store.tool, (_) => cancelDraft());
     _scope.listen(store.alerts, (_) => _applyAlerts());
     _scope.listen(trade.version, (_) => _tradeReload(_loadTrading));
@@ -990,6 +995,11 @@ class ChartPanel {
 
   void _move(double? x, double? y, double? logical) {
     if (x == null || y == null || logical == null) {
+      if (layer.hoverId != null) {
+        // hover-only text goes away when the pointer leaves the chart
+        layer.hoverId = null;
+        layer.update();
+      }
       _legendIndex = null;
       _renderLegend();
       crosshairTime.value = (index, null);
@@ -1380,6 +1390,10 @@ class ChartPanel {
     o['tradeHits'] = (() => jsonEncode([
           for (final t in trading.hits) {'kind': t.kind, 'x': t.x + t.w / 2, 'y': t.y + t.hgt / 2, 'order': t.order?.id}
         ]).toJS).toJS;
+    o['labelBoxes'] = (() => jsonEncode({
+          for (final e in layer.labelBoxes.entries) e.key: [for (final b in e.value) [b.l, b.t, b.w, b.h]],
+        }).toJS).toJS;
+    o['allLabels'] = (() => jsonEncode([for (final b in engine.labels.boxes) [b.l, b.t, b.w, b.h]]).toJS).toJS;
     o['chartType'] = (() => engine.chartType.name.toJS).toJS;
     o['scale'] = (() => engine.scaleMode.name.toJS).toJS;
     o['xOfTime'] = ((int t) => layer.x(t)?.toJS).toJS;

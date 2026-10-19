@@ -31,11 +31,19 @@ class AnnotationLayer {
   Draft? draft;
   String? selectedId, hoverId;
   bool hidden = false;
+  /// Standalone text and callouts (the toolbar's "Text" checkbox). Text attached to other drawings
+  /// only shows while that drawing is hovered or selected.
+  bool showText = true;
   /// Layers whose drawings cannot be dragged (null/'' = the main layer).
   Set<String> lockedLayers = const {};
   /// Drawings being dragged: shown instead of the stored version until the edit is committed.
   final Map<String, Annotation> previews = {};
-  double _w = 10000;
+  double _w = 10000, _h = 10000;
+  /// Label boxes drawn last frame per drawing (hit testing follows labels that were moved aside).
+  final Map<String, List<Box>> _boxes = {};
+  String? _cur;
+  bool _pinned = false;
+  Map<String, List<Box>> get labelBoxes => _boxes;
 
   AnnotationLayer(this.chart) {
     chart.overlay = _drawAll;
@@ -60,12 +68,21 @@ class AnnotationLayer {
 
   // ---------------------------------------------------------------- drawing
 
+  static bool isText(Annotation a) => a.type == 'text' || a.type == 'callout';
+
+  bool _shown(Annotation a) => a.visible && (showText || !isText(a) || a.id == selectedId);
+
   void _drawAll(CanvasRenderingContext2D ctx, double w, double h) {
     _w = w;
+    _h = h;
+    _boxes.clear();
     if (!hidden) {
-      for (final stored in annotations) {
+      // the hovered and selected drawings go last: on top, and their revealed text doesn't push the
+      // labels of the others around
+      bool front(Annotation a) => a.id == hoverId || a.id == selectedId;
+      for (final stored in [...annotations.where((a) => !front(a)), ...annotations.where(front)]) {
         final a = previews[stored.id] ?? stored;
-        if (!a.visible) continue;
+        if (!_shown(a)) continue;
         final sel = a.id == selectedId;
         _drawOne(ctx, a, w, h, sel, a.id == hoverId);
         if (sel) _handles(ctx, [for (final hd in handles(a)) hd.$2], _baseColor(a), locked: isLocked(a));
@@ -84,8 +101,18 @@ class AnnotationLayer {
   void _lineStyle(CanvasRenderingContext2D ctx, String? style) =>
       _dash(ctx, style == 'dashed' ? const [6, 4] : style == 'dotted' ? const [2, 3] : const []);
 
+  /// Claims a spot for a box anchored at [want]: kept as is for the drawing being edited, otherwise
+  /// moved clear of labels already on the chart (all layers, orders and fills).
+  Box _claim(Box want, {bool vertical = true, int dir = 0}) {
+    final b = _pinned
+        ? (chart.labels..reserve(want)).boxes.last
+        : chart.labels.place(want, vertical: vertical, dir: dir, lo: 0, hi: vertical ? _h : _w, maxShift: vertical ? 120 : _w);
+    (_boxes[_cur ?? ''] ??= []).add(b);
+    return b;
+  }
+
   void _label(CanvasRenderingContext2D ctx, String text, double x, double y, String color,
-      {String align = 'left', String? bg, String? fg, double size = 11}) {
+      {String align = 'left', String? bg, String? fg, double size = 11, bool vertical = true, int dir = 0}) {
     ctx.font = '500 ${size}px $_font';
     final w = ctx.measureText(text).width + 10;
     final h = size + 7;
@@ -93,7 +120,17 @@ class AnnotationLayer {
     if (align == 'right') left = x - w;
     if (align == 'center') left = x - w / 2;
     left = math.max(2, math.min(left, _w - w - 2));
+    final want = Box(left, y - h / 2, w, h);
+    final box = _claim(want, vertical: vertical, dir: dir);
+    left = box.l;
     _dash(ctx, const []);
+    if ((box.t - want.t).abs() > 3) {
+      // moved aside: a faint leader back to where the label belongs
+      ctx.strokeStyle = hexAlpha(color, 0.5).toJS;
+      ctx.lineWidth = 1;
+      _line(ctx, XY(x.clamp(box.l, box.r), y), XY(x.clamp(box.l, box.r), box.t > want.t ? box.t : box.b));
+    }
+    y = box.t + h / 2;
     ctx.fillStyle = (bg ?? 'rgba(15,23,42,0.85)').toJS;
     ctx.strokeStyle = color.toJS;
     ctx.lineWidth = 1;
@@ -123,10 +160,13 @@ class AnnotationLayer {
     ctx.fillStyle = base.toJS;
     ctx.lineWidth = lw;
     _lineStyle(ctx, st['line_style'].s);
+    _cur = a.id;
+    _pinned = selected && (a.id == '__draft' || previews.containsKey(a.id));
     final pts = [for (final p in a.points) pt(p)];
     XY? at(int i) => i < pts.length ? pts[i] : null;
     double? price(int i) => i < a.points.length ? a.points[i].price : null;
-    final text = a.text ?? '';
+    // text attached to a line or shape waits for hover/selection; standalone text always shows
+    final text = isText(a) || selected || hover ? (a.text ?? '') : '';
     final badge = a.author == 'agent' ? '✦ ' : '';
 
     switch (a.type) {
@@ -156,7 +196,7 @@ class AnnotationLayer {
         final x0 = a.type == 'horizontal_ray' ? (x(a.points[0].time) ?? 0.0) : 0.0;
         _line(ctx, XY(x0, yy), XY(W, yy));
         _label(ctx, '$badge${text.isNotEmpty ? '$text · ' : ''}${fmtPrice(price(0)!)}', W - 60, yy, base,
-            align: 'right');
+            align: 'right', vertical: false, dir: -1);
       case 'vertical_line':
         final xx = x(a.points.isEmpty ? null : a.points[0].time);
         if (xx == null) break;
@@ -260,7 +300,11 @@ class AnnotationLayer {
                 : shape == 'arrow_down'
                     ? 'above'
                     : 'at');
-        final yy = p.y + (pos == 'below' ? 14 : pos == 'above' ? -14 : 0);
+        // markers on the same bar stack outward instead of covering each other
+        final yy = _claim(Box(p.x - 6, p.y + (pos == 'below' ? 14 : pos == 'above' ? -14 : 0) - 7, 12, 14),
+                    dir: pos == 'below' ? 1 : pos == 'above' ? -1 : 0)
+                .t +
+            7;
         _dash(ctx, const []);
         ctx.beginPath();
         if (shape == 'arrow_up') {
@@ -278,7 +322,10 @@ class AnnotationLayer {
         }
         ctx.closePath();
         ctx.fill();
-        if (text.isNotEmpty) _label(ctx, text, p.x, yy + (pos == 'above' ? -16 : 16), base, align: 'center', size: 10);
+        if (text.isNotEmpty) {
+          _label(ctx, text, p.x, yy + (pos == 'above' ? -16 : 16), base, align: 'center', size: 10,
+              dir: pos == 'above' ? -1 : 1);
+        }
       case 'long_position' || 'short_position':
         final e = at(0), s = at(1), t = at(2);
         final entry = price(0), stop = price(1), tgt = price(2);
@@ -375,7 +422,9 @@ class AnnotationLayer {
     final P = XY(px, py);
     final W = _w;
     for (final a in annotations.reversed) {
-      if (!a.visible) continue;
+      if (!_shown(a)) continue;
+      // a shown label (moved aside or revealed by hover) counts as part of its drawing
+      if (_boxes[a.id]?.any((b) => b.contains(px, py)) == true) return a.id;
       final pts = [for (final p in a.points) pt(p)];
       XY? at(int i) => i < pts.length ? pts[i] : null;
       var d = double.infinity;

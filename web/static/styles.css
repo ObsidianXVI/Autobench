@@ -879,3 +879,5 @@ button.panel-title:hover { background: var(--hover); }
 .jr-body .tr-tools { flex-wrap: wrap; }
 .jr-perf .tr-kpis { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
 .jr-perf .tr-kpi b { white-space: normal; font-size: 15px; }
+.tb.tb-check { gap: 5px; cursor: pointer; user-select: none; }
+.tb.tb-check input { margin: 0; accent-color: var(--accent); cursor: pointer; }

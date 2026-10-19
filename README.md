@@ -80,7 +80,10 @@ part of the codebase, and its only dependency is `package:web`. For UI developme
   channel, Fibonacci, rectangle, arrow, text, callout, marker, measure and long/short positions. They
   have a magnet (snap to OHLC), stay-in-drawing mode and lock/hide-all. Select a drawing to drag it or
   its points. A floating toolbar then sets color, width and style, edits text, adds a line alert,
-  locks, clones, hides or deletes it, with undo/redo for all of these.
+  locks, clones, hides or deletes it, with undo/redo for all of these. Text and callouts are always
+  shown (the toolbar's **Text** checkbox hides them); text attached to other drawings appears when you
+  hover the drawing. Labels from drawings in any layer, order lines, fills and the price axis move
+  aside instead of covering each other.
 - **Keyboard** (TradingView-style): start typing a ticker to search, type a number for the interval,
   `/` indicators, `Alt+T/H/J/V/F/L/S` tools, `Alt+A` alert, `Alt+R` reset, `Del`, `Esc`, `⌘Z/⇧⌘Z`,
   `⌘S` save layout, arrows to scroll/zoom, `?` for the full list. Right-click the chart or a drawing

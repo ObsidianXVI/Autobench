@@ -236,6 +236,49 @@ def test_trade_plan_text_and_styles(page, server):
     assert any(a["text"] == "breakout watch" for a in annotations(server, "SPY"))
 
 
+def _overlap(a, b) -> bool:
+    return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
+
+
+def test_labels_avoid_each_other_and_drawing_text_shows_on_hover(page, server):
+    bars = httpx.get(f"{server}/api/bars/SPY", params={"interval": "1d", "lookback": "1y"}).json()["bars"]
+    t0, t1, last = bars[-30]["time"], bars[-10]["time"], bars[-20]
+    px = last["close"]
+    mcp_call(server, "draw_annotations", {"symbol": "SPY", "items": [
+        {"type": "text", "points": [{"time": last["time"], "price": px}], "text": "first note"},
+        {"type": "text", "points": [{"time": last["time"], "price": px}], "text": "second note"},
+        {"type": "callout", "points": [{"time": t0, "price": px}, {"time": last["time"], "price": px}], "text": "third"},
+        {"type": "horizontal_line", "points": [{"price": px * 1.02}], "text": "resistance"},
+        {"type": "horizontal_line", "points": [{"price": px * 1.0201}], "text": "also resistance"},
+        {"type": "trendline", "points": [{"time": t0, "price": px * 0.97}, {"time": t1, "price": px * 0.99}],
+         "text": "rising support"},
+    ]})
+    page.wait_for_function("__autobench.drawn() === 6", timeout=10000)
+    ids = {a["text"]: a["id"] for a in annotations(server, "SPY")}
+    boxes = lambda: json.loads(page.evaluate("__autobench.chart.active().labelBoxes()"))  # noqa: E731
+    page.wait_for_function(f"JSON.parse(__autobench.chart.active().labelBoxes())['{ids['third']}'] !== undefined")
+    b = boxes()
+    # standalone text is always shown and nothing overlaps, within a layer or across drawings
+    shown = [box for k in ("first note", "second note", "third", "resistance", "also resistance") for box in b[ids[k]]]
+    assert all(not _overlap(x, y) for i, x in enumerate(shown) for y in shown[i + 1:]), shown
+    # text attached to a line waits for hover
+    assert ids["rising support"] not in b
+    tm = (t0 + t1) // 2
+    x = page.evaluate(f"__autobench.xOfTime({tm})")
+    y = page.evaluate(f"__autobench.chart.active().yOfPrice({px * 0.98})")
+    box = chart_box(page)
+    page.mouse.move(box["x"] + x, box["y"] + y)
+    page.wait_for_function(f"JSON.parse(__autobench.chart.active().labelBoxes())['{ids['rising support']}'] !== undefined")
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] - 40)  # off the chart
+    page.wait_for_function(f"JSON.parse(__autobench.chart.active().labelBoxes())['{ids['rising support']}'] === undefined")
+    # the toolbar checkbox hides standalone text; line labels stay
+    page.uncheck(".tb-check input")
+    page.wait_for_function(f"JSON.parse(__autobench.chart.active().labelBoxes())['{ids['first note']}'] === undefined")
+    assert ids["resistance"] in boxes()
+    page.check(".tb-check input")
+    page.wait_for_function(f"JSON.parse(__autobench.chart.active().labelBoxes())['{ids['first note']}'] !== undefined")
+
+
 def test_zoom_pan_interval_and_chart_type(page):
     box = chart_box(page)
     lo, hi = page.evaluate("__autobench.visibleRange()")

@@ -99,6 +99,7 @@ class ChartPage {
     _scope.listen(store.stayInDrawMode, (_) => _renderDrawTools());
     _scope.listen(store.drawingsHidden, (_) => _renderDrawTools());
     _scope.listen(store.drawingsLocked, (_) => _renderDrawTools());
+    _scope.listen(store.textShown, (_) => _renderToolbar());
     _scope.listen(store.undoVersion, (_) => _renderToolbar());
     _scope.listen(store.layoutName, (_) => _renderToolbar());
     _scope.listen(store.syncSymbol, (_) => _renderToolbar());
@@ -230,6 +231,13 @@ class ChartPage {
           (_) => undoLast(), cls: store.undo.canUndo ? '' : 'disabled'),
       _tbButton(icon('redo', size: 17), store.undo.canRedo ? 'Redo ${store.undo.redoLabel} (⇧⌘Z)' : 'Nothing to redo',
           (_) => redoLast(), cls: store.undo.canRedo ? '' : 'disabled'),
+      h('span.tb-sep'),
+      h('label.tb.tb-check', [
+        h('input', null, {'type': 'checkbox', 'aria-label': 'Show text'},
+            {'change': (e) => store.textShown.value = (e.target as HTMLInputElement).checked}) as HTMLInputElement
+          ..checked = store.textShown.value,
+        h('span', 'Text'),
+      ], {'data-tip': 'Show text and callouts (text on other drawings shows on hover)'}),
       h('span.spacer'),
       _tbButton([icon('folder', size: 16), h('span', store.layoutName.value ?? 'Unsaved layout'), icon('chev-down', size: 13)],
           'Save / load layouts', (e) => _layoutMenu(e.currentTarget as Element), cls: 'wide'),

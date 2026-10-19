@@ -97,6 +97,7 @@ const prefDefaults = <String, Object?>{
   'draw.stay': false,
   'draw.hidden': false,
   'draw.locked': false,
+  'draw.text': true, // standalone text and callouts
   'draw.groups': <String, Object?>{}, // last tool chosen per toolbar group
   'watchlist.sort': '',
   'watchlist.collapsed': <Object?>[],
@@ -148,6 +149,7 @@ class Store {
   final magnet = Obs<bool>(true);
   final drawingsHidden = Obs<bool>(false);
   final drawingsLocked = Obs<bool>(false);
+  final textShown = Obs<bool>(true);
   final selected = Obs<String?>(null); // selected drawing id
   final undo = UndoStack();
   final undoVersion = Obs<int>(0);
@@ -202,7 +204,7 @@ class Store {
   Store() {
     // tool toggles mirror their preferences
     for (final (obs, key) in [(magnet, 'draw.magnet'), (stayInDrawMode, 'draw.stay'), (drawingsHidden, 'draw.hidden'),
-      (drawingsLocked, 'draw.locked')]) {
+      (drawingsLocked, 'draw.locked'), (textShown, 'draw.text')]) {
       obs.listen((v) => setPref(key, v));
     }
   }
@@ -618,6 +620,7 @@ class Store {
       stayInDrawMode.value = pref<bool>('draw.stay');
       drawingsHidden.value = pref<bool>('draw.hidden');
       drawingsLocked.value = pref<bool>('draw.locked');
+      textShown.value = pref<bool>('draw.text');
       if (s['layout'].truthy) applyLayout(s['layout']);
       layoutName.value = s['layoutName'].s;
       panel.value = s['panel'].isNull ? null : s['panel'].s;

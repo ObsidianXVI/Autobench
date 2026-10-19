@@ -15,6 +15,7 @@ import 'package:web/web.dart';
 
 import '../core/chartmath.dart';
 import '../core/format.dart';
+import '../core/geometry.dart';
 import '../core/models.dart';
 import '../core/ticks.dart';
 import '../core/time.dart';
@@ -191,6 +192,13 @@ class ChartEngine {
 
   /// Drawn above [overlay] (positions and orders sit on top of drawings).
   void Function(CanvasRenderingContext2D ctx, double w, double h)? topOverlay;
+
+  /// Runs before [overlay] each frame so labels pinned to fixed spots (order lines, fills) can
+  /// reserve them in [labels] before drawings place theirs.
+  void Function(CanvasRenderingContext2D ctx, double w, double h)? reserveLabels;
+
+  /// Label boxes on the main pane this frame, shared by every overlay so labels avoid each other.
+  final labels = LabelLayout();
 
   /// Called after each frame (DOM legends reposition themselves from [paneGeometry]).
   void Function()? afterDraw;
@@ -684,7 +692,8 @@ class ChartEngine {
       }
       _dash(ctx, const []);
       _drawMarkers(ctx, p);
-      for (final o in [overlay, topOverlay]) {
+      labels.clear();
+      for (final o in [reserveLabels, overlay, topOverlay]) {
         if (o == null) continue;
         ctx.save();
         o(ctx, w, p.height);
@@ -987,10 +996,15 @@ class ChartEngine {
     return null;
   }
 
-  void _axisLabel(CanvasRenderingContext2D ctx, String text, double y, String bg, String fg, {String? second}) {
+  void _axisLabel(CanvasRenderingContext2D ctx, String text, double y, String bg, String fg,
+      {String? second, LabelLayout? stack}) {
     final x0 = plotWidth;
     final h = second == null ? 18.0 : 30.0;
-    final top = (y - 9).clamp(0.0, math.max(0.0, height - timeAxisHeight - h));
+    final bottom = math.max(0.0, height - timeAxisHeight - h);
+    var top = (y - 9).clamp(0.0, bottom);
+    if (stack != null) {
+      top = stack.place(Box(x0, top, axisWidth, h), lo: 0, hi: height - timeAxisHeight, maxShift: 200).t;
+    }
     ctx.fillStyle = bg.toJS;
     ctx.beginPath();
     ctx.roundRect(x0 + 1, top, axisWidth - 2, h, 3.toJS);
@@ -1025,9 +1039,19 @@ class ChartEngine {
       }
     }
     final main = _panes[0];
+    // price-axis labels stack instead of covering each other; the last price keeps its spot
+    final stack = LabelLayout(gap: 1);
+    if (showPrice) {
+      final last = bars.last;
+      final up = _n < 2 || last.close >= bars[_n - 2].close;
+      _axisLabel(ctx, _priceText(main, last.close), main.y(last.close), up ? theme.up : theme.down, '#fff',
+          second: lastLabelExtra, stack: stack);
+    }
     for (final pl in priceLines) {
       final y = main.y(pl.price);
-      if (y.isFinite && y >= 0 && y <= main.height) _axisLabel(ctx, _priceText(main, pl.price), y, pl.color, '#fff');
+      if (y.isFinite && y >= 0 && y <= main.height) {
+        _axisLabel(ctx, _priceText(main, pl.price), y, pl.color, '#fff', stack: stack);
+      }
     }
     final (from, to) = _visibleBars();
     for (final c in compares) {
@@ -1036,7 +1060,7 @@ class ChartEngine {
       if (v == null || base == null) continue;
       final price = _firstVisibleClose(from, to) * v / base;
       _axisLabel(ctx, scaleMode == ScaleMode.percent ? _priceText(main, price) : c.symbol, main.y(price), c.color,
-          '#fff');
+          '#fff', stack: stack);
     }
     for (final s in series) {
       if (s.pane == 0 || !s.lastValueLabel || !s.visible) continue;
@@ -1044,13 +1068,7 @@ class ChartEngine {
       if (v == null) continue;
       final p = _panes[s.pane];
       final y = p.y(v);
-      if (y >= p.top && y <= p.top + p.height) _axisLabel(ctx, axisPrice(v, p.step), y, s.color, '#0b1220');
-    }
-    if (showPrice) {
-      final last = bars.last;
-      final up = _n < 2 || last.close >= bars[_n - 2].close;
-      _axisLabel(ctx, _priceText(main, last.close), main.y(last.close), up ? theme.up : theme.down, '#fff',
-          second: lastLabelExtra);
+      if (y >= p.top && y <= p.top + p.height) _axisLabel(ctx, axisPrice(v, p.step), y, s.color, '#0b1220', stack: stack);
     }
   }
 
