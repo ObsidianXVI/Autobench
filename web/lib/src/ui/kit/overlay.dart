@@ -168,6 +168,8 @@ Popover showMenu(List<MenuItem> items, {Element? anchor, double? x, double? y, S
   final rows = <HTMLElement>[];
   var active = -1;
   Popover? sub;
+  var subOwner = -1;
+  Timer? switchTimer; // hover intent: a pointer crossing other rows on its way into an open submenu keeps it
 
   void setActive(int i) {
     if (active >= 0 && active < rows.length) rows[active].classList.remove('active');
@@ -203,11 +205,31 @@ Popover showMenu(List<MenuItem> items, {Element? anchor, double? x, double? y, S
       list.append(row);
       continue;
     }
-    row.addEventListener('mouseenter', ((Event _) {
+    void enter() {
+      switchTimer?.cancel();
       setActive(index);
       sub?.close();
       sub = null;
-      if (it.submenu != null) sub = showMenu(it.submenu!, anchor: row, align: 'start', cls: 'submenu');
+      subOwner = -1;
+      if (it.submenu != null) {
+        final s = showMenu(it.submenu!, anchor: row, align: 'start', cls: 'submenu');
+        s.el.addEventListener('mouseenter', ((Event _) {
+          switchTimer?.cancel();
+          setActive(index);
+        }).toJS);
+        sub = s;
+        subOwner = index;
+      }
+    }
+
+    row.addEventListener('mouseenter', ((Event _) {
+      switchTimer?.cancel();
+      if (subOwner == index && sub != null && sub!.isOpen) return;
+      if (sub != null && sub!.isOpen) {
+        switchTimer = Timer(const Duration(milliseconds: 300), enter);
+      } else {
+        enter();
+      }
     }).toJS);
     row.addEventListener('click', ((MouseEvent e) {
       e.stopPropagation();
@@ -246,6 +268,7 @@ Popover showMenu(List<MenuItem> items, {Element? anchor, double? x, double? y, S
   }).toJS;
   document.addEventListener('keydown', keys);
   pop.addCloseHook(() {
+    switchTimer?.cancel();
     document.removeEventListener('keydown', keys);
     sub?.close();
   });

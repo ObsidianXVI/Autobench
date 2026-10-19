@@ -458,6 +458,41 @@ def test_layer_create_hide_lock_and_delete(page, server):
     assert [l["name"] for l in _layers(page)] == ["Main"]
 
 
+def test_layer_with_its_own_chart_per_interval(page, server):
+    _open_layers(page)
+    page.click(".layers-panel button[aria-label='New layer']")
+    page.fill(".dialog input", "Entry")
+    page.keyboard.press("Enter")
+    page.wait_for_selector(".layer-head:has-text('Entry').active")
+    page.click(".layers-panel button[aria-label='Layer Entry menu']")
+    page.hover(".menu-item:has-text('Add price chart')")
+    page.click(".menu-item:has-text('at 30m')")
+    # the chart switches to 30m and shows the Entry layer's chart (price + volume, no Main indicators)
+    page.wait_for_function("document.querySelector('.legend-interval').textContent === '30m'")
+    page.wait_for_selector(".legend-layer:text-is('Entry')")
+    page.wait_for_function("__autobench.bars() > 100 && __autobench.panes() === 1")
+    page.mouse.click(400, 400)
+    page.keyboard.press("/")
+    page.fill(".ind-dialog input", "macd")
+    page.click(".ind-item >> nth=0")
+    page.keyboard.press("Escape")
+    page.wait_for_function("__autobench.panes() === 2")
+    entry = next(l for l in _layers(page) if l["name"] == "Entry")
+    assert entry["interval"] == "30m" and [i["kind"] for i in entry["items"]] == ["price", "volume", "indicator"]
+    # back on 1D: Main's setup (RSI pane, SMAs), Entry's MACD gone, Main becomes the active layer
+    page.click(".tb.iv:text-is('1D')")
+    page.wait_for_function("document.querySelector('.legend-interval').textContent === '1D'")
+    page.wait_for_selector(".legend-layer:text-is('Main')")
+    page.wait_for_selector(".layer-head:has-text('Main').active")
+    page.wait_for_function("__autobench.panes() === 2 && !document.querySelector('.pane-legends').textContent.includes('macd')")
+    assert page.is_visible(".layer-head.off-tf:has-text('Entry')")
+    # clicking the Entry layer switches the chart back to 30m
+    page.click(".layer-head:has-text('Entry') .layer-name")
+    page.wait_for_function("document.querySelector('.legend-interval').textContent === '30m'")
+    page.wait_for_function("__autobench.panes() === 2 && document.querySelector('.pane-legends').textContent.includes('macd')")
+    page.click(".tb.iv:text-is('1D')")  # leave the shared server on 1D
+
+
 def test_price_and_volume_hide_and_volume_in_own_pane(page):
     _open_layers(page)
     assert page.evaluate("__autobench.chart.active().showPrice()") is True

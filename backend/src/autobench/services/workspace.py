@@ -287,6 +287,10 @@ def layers_summary(symbol: str) -> list[dict] | None:
             else:
                 label = kind or "?"
             items.append({"kind": kind, "label": label, "visible": it.get("visible", True)})
-        out.append({"id": layer.get("id"), "name": layer.get("name"), "visible": layer.get("visible", True),
-                    "items": items})
+        entry = {"id": layer.get("id"), "name": layer.get("name"), "visible": layer.get("visible", True), "items": items}
+        if layer.get("interval"):
+            entry["interval"] = layer["interval"]  # the layer only shows at this interval
+        if any(it.get("kind") == "price" for it in layer.get("items", [])):
+            entry["chart"] = True  # holds its own price chart: on screen when the chart is at its interval
+        out.append(entry)
     return out

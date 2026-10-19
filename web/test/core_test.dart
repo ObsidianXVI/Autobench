@@ -276,9 +276,9 @@ Future<void> main() async {
     check('cannot remove the last layer', c.removeLayer(c.layers.single.id), false);
 
     final d = c.duplicateLayer(mainLayerId);
-    check('duplicate copies items with new ids, never the price', [
-      d.items.any((i) => i.kind == ItemKind.price), d.items.every((i) => c.find(i.id)!.$1 == d), d.items.length,
-    ], [false, true, c.layer(mainLayerId)!.items.length - 1]);
+    check('duplicate copies every item with new ids, price chart included', [
+      d.hasPrice, d.items.every((i) => c.find(i.id)!.$1 == d), d.items.length,
+    ], [true, true, c.layer(mainLayerId)!.items.length]);
 
     final legacy = SymbolConfig.fromLegacy(indicators: [const IndicatorRef('ema', {'length': 21})], chartType: 'line',
         scale: 'log', compares: ['SPY']);
@@ -291,12 +291,60 @@ Future<void> main() async {
       {'id': 'a', 'items': [{'id': 'p1', 'kind': 'price'}, {'id': 'x', 'kind': 'indicator', 'name': 'rsi'}]},
       {'id': 'b', 'items': [{'id': 'p2', 'kind': 'price'}, {'id': 'x', 'kind': 'indicator', 'name': 'rsi'}]},
     ]}));
-    check('one price, unique ids', [dupes.all.where((i) => i.kind == ItemKind.price).length, dupes.all.length], [1, 2]);
+    check('one price per layer, unique ids', [dupes.all.where((i) => i.kind == ItemKind.price).length, dupes.all.length], [2, 3]);
+    final twice = SymbolConfig.fromJson(J({'layers': [
+      {'id': 'a', 'items': [{'id': 'price', 'kind': 'price'}, {'id': 'price', 'kind': 'price'}]},
+      {'id': 'b', 'items': [{'id': 'price', 'kind': 'price'}, {'id': 'volume', 'kind': 'volume'}, {'id': 'v2', 'kind': 'volume'}]},
+    ]}));
+    check('repeated price ids are renamed, extra prices/volumes in a layer dropped', [
+      twice.layer('a')!.items.length, twice.layer('b')!.items.length, twice.layer('b')!.priceItem!.id != 'price',
+    ], [1, 2, true]);
 
     final withDrawings = SymbolConfig.builtin();
     check('drawing layers are created', [withDrawings.ensureDrawingLayers([null, 'agent', 'ideas']),
       withDrawings.layers.map((l) => l.name).toList()], [true, ['ideas', 'Agent', 'Main']]);
     check('unknown drawing layer falls back to main', withDrawings.layerOfDrawing('nope', 'user').id, mainLayerId);
+  });
+
+  group('layer timeframes', () {
+    bool isOv(String n) => n == 'vwap' || n == 'sma';
+    final c = SymbolConfig.builtin(); // Main: price, volume, sma50, sma200, rsi (untied)
+    c.layer(mainLayerId)!.interval = '1d';
+    final entry = c.addLayer('Entry');
+    c.addChart(entry.id, '30m');
+    c.addItem(LayerItem.indicator('vwap', 'vwap'), layerId: entry.id);
+    final levels = c.addLayer('Levels'); // no chart, no tie: on every interval
+    c.addItem(LayerItem.indicator('ema', 'ema', {'length': 21}), layerId: levels.id);
+    final scalp = c.addLayer('Scalp')..interval = '5m'; // no chart, tied to 5m
+    c.addItem(LayerItem.indicator('atr', 'atr'), layerId: scalp.id);
+    List<String> ids(String iv) => [for (final i in c.shownAt(iv)) i.id];
+
+    check('two chart layers', [c.multiChart, c.chartLayers.length, entry.hasPrice, entry.volumeItem != null], [true, 2, true, true]);
+    check('1d shows Main and untied layers', ids('1d'), ['price', 'volume', 'sma50', 'sma200', 'rsi', 'ema']);
+    check('30m shows Entry instead of Main', ids('30m'),
+        [entry.priceItem!.id, entry.volumeItem!.id, 'vwap', 'ema']);
+    check('chart layer per interval', [c.chartLayerFor('1d').id, c.chartLayerFor('30m').id, c.priceAt('30m').id],
+        [mainLayerId, entry.id, entry.priceItem!.id]);
+    check('an interval with no chart layer falls back to the bottom one', c.chartLayerFor('1h').id, mainLayerId);
+    check('a tied layer without a chart only adds to its interval', [ids('5m').contains('atr'), ids('1d').contains('atr')], [true, false]);
+    check('indicators to compute follow the interval', [for (final (i, _) in c.indicatorItemsAt('30m')) i.id], ['vwap', 'ema']);
+    check('panes at 30m', assignPanes(c.shownAt('30m'), isOv)['vwap'], 0);
+    check('volume follows the chart layer', [c.volumeAt('1d')!.id, c.volumeAt('30m')!.id], ['volume', entry.volumeItem!.id]);
+    check('item shown only at its interval', [c.itemShownAt(c.find('rsi')!.$2, '1d'), c.itemShownAt(c.find('rsi')!.$2, '30m')], [true, false]);
+    check('drawings follow the interval tie only', [
+      c.drawingsApplyAt(c.layer(mainLayerId)!, '30m'), c.drawingsApplyAt(entry, '1d'), c.drawingsApplyAt(levels, '30m'),
+    ], [false, false, true]);
+    c.layer(mainLayerId)!.interval = null; // untied: the default chart for every other interval
+    check('untied chart layer is the default', [c.chartLayerFor('1h').id, c.chartLayerFor('30m').id, c.drawingsApplyAt(c.layer(mainLayerId)!, '30m')],
+        [mainLayerId, entry.id, true]);
+    check('a layer holds one price chart', c.moveItem('price', entry.id), false);
+    check('price chart of a non-last chart layer can be removed', [c.removeChart(entry.id), entry.hasPrice, entry.volumeItem], [true, false, null]);
+    check('the last price chart cannot be removed', [c.removeChart(mainLayerId), c.removeItem('price')], [false, false]);
+    c.addChart(entry.id, '30m');
+    final round = SymbolConfig.fromJson(J(c.toJson()));
+    check('interval survives json', [round.layer(entry.id)!.interval, round.chartLayerFor('30m').id], ['30m', entry.id]);
+    c.removeLayer(entry.id);
+    check('removing a chart layer leaves the others', [c.chartLayers.length, c.chartLayerFor('30m').id], [1, mainLayerId]);
   });
 
   group('trading', () {

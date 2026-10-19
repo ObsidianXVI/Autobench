@@ -137,7 +137,10 @@ class ChartPanel {
     _toLatest.addEventListener('click', ((Event _) => engine.scrollToRealtime()).toJS);
 
     _scope.listen(state.symbol, (_) => _load());
-    _scope.listen(state.interval, (_) => _load());
+    _scope.listen(state.interval, (_) {
+      _followLayer();
+      _load();
+    });
     _scope.listen(store.configVersion, (_) {
       if (store.lastConfigChanged == symbol) _applyConfig();
     });
@@ -318,16 +321,16 @@ class ChartPanel {
       _renderLegend();
       return;
     }
-    engine.setChartType(chartTypeFromName(c.price.chartType));
-    engine.showPrice = c.itemShown(c.price);
+    engine.setChartType(chartTypeFromName(c.priceAt(interval).chartType));
+    engine.showPrice = c.itemShownAt(c.priceAt(interval), interval);
     engine.setScaleMode(ScaleMode.values.firstWhere((m) => m.name == c.scale, orElse: () => ScaleMode.linear));
-    final indicators = c.indicatorItems;
+    final indicators = c.indicatorItemsAt(interval);
     final key = jsonEncode([for (final (item, r) in indicators) [item.id, r.toJson()]]);
     if (key != _indKey) {
       _indKey = key;
       _fetchIndicators(indicators);
     }
-    for (final i in c.all) {
+    for (final i in c.allAt(interval)) {
       if (i.kind == ItemKind.compare && i.symbol.isNotEmpty) _fetchCompare(i.symbol);
     }
     _rebuildSeries();
@@ -385,7 +388,7 @@ class ChartPanel {
   void _rebuildSeries() {
     final c = cfg;
     if (c == null || bars.isEmpty) return;
-    final shown = c.shown;
+    final shown = c.shownAt(interval);
     final panes = assignPanes(shown, (name) => _indData.values.isNotEmpty
         ? (_indDataByName(name)?.overlay ?? _isOverlay(name))
         : _isOverlay(name));
@@ -468,7 +471,7 @@ class ChartPanel {
   _IndData? _indDataByName(String name) {
     final c = cfg;
     if (c == null) return null;
-    for (final (item, _) in c.indicatorItems) {
+    for (final (item, _) in c.indicatorItemsAt(interval)) {
       if (item.name == name && _indData[item.id] != null) return _indData[item.id];
     }
     return null;
@@ -656,12 +659,23 @@ class ChartPanel {
     }
   }
 
+  bool _drawingLayerShown(Layer l) => l.visible && cfg!.drawingsApplyAt(l, interval);
+
+  /// After an interval change in the focused chart, make the layer that is now on screen the active
+  /// one (if the active layer does not apply at the new interval), so new items land where they show.
+  void _followLayer() {
+    final c = cfg;
+    if (c == null || !identical(store.activeChart, state) || c.appliesAt(c.active, interval)) return;
+    final target = c.chartLayerFor(interval);
+    store.editConfig(symbol, (x) => x.activeLayer = target.id, label: 'Activate ${target.name}', record: false);
+  }
+
   void _applyDrawings() {
     final all = store.drawingsFor(symbol);
     final c = cfg;
     final shown = [
       for (final a in all)
-        if ((a.interval == null || a.interval == interval) && (c == null || c.layerOfDrawing(a.layer, a.author).visible)) a,
+        if ((a.interval == null || a.interval == interval) && (c == null || _drawingLayerShown(c.layerOfDrawing(a.layer, a.author)))) a,
     ];
     layer.lockedLayers = c == null ? const {} : {for (final l in c.layers) if (l.locked) l.id};
     layer.annotations = shown;
@@ -1161,8 +1175,8 @@ class ChartPanel {
     }
     final p = price == null ? null : double.parse(price.toStringAsFixed(price.abs() >= 1 ? 2 : 4));
     final c = cfg;
-    final t = c?.price.chartType ?? 'candles';
-    final vol = c?.volume;
+    final t = c?.priceAt(interval).chartType ?? 'candles';
+    final vol = c?.volumeAt(interval);
     showMenu([
       if (p != null) ...[
         MenuItem('Add alert at ${fmtPrice(p)}', iconName: 'alarm', onSelect: () => showAlertDialog(symbol, price: p)),
@@ -1176,7 +1190,7 @@ class ChartPanel {
       MenuItem('Reset chart view', iconName: 'refresh', shortcut: 'Alt+R', onSelect: resetView),
       MenuItem('Chart type', iconName: 'candles', submenu: [
         for (final (k, label) in chartTypes)
-          MenuItem(label, checked: t == k, onSelect: () => store.editConfig(symbol, (c) => c.price.chartType = k, label: 'Chart type')),
+          MenuItem(label, checked: t == k, onSelect: () => store.editConfig(symbol, (c) => c.priceAt(interval).chartType = k, label: 'Chart type')),
       ]),
       MenuItem('Price scale', iconName: 'log', submenu: [
         for (final sc in ['linear', 'log', 'percent'])
@@ -1184,13 +1198,13 @@ class ChartPanel {
               checked: c?.scale == sc, onSelect: () => store.editConfig(symbol, (c) => c.scale = sc, label: 'Price scale')),
       ]),
       if (c != null)
-        MenuItem(c.itemShown(c.price) ? 'Hide price chart' : 'Show price chart', iconName: 'candles',
-            onSelect: () => store.editConfig(symbol, (c) => c.price.visible = !c.price.visible, label: 'Price visibility')),
+        MenuItem(c.itemShownAt(c.priceAt(interval), interval) ? 'Hide price chart' : 'Show price chart', iconName: 'candles',
+            onSelect: () => store.editConfig(symbol, (c) => c.priceAt(interval).visible = !c.priceAt(interval).visible, label: 'Price visibility')),
       if (vol != null)
         MenuItem(vol.visible ? 'Hide volume' : 'Show volume', iconName: 'chart',
-            onSelect: () => store.editConfig(symbol, (c) => c.volume!.visible = !c.volume!.visible, label: 'Volume visibility'))
+            onSelect: () => store.editConfig(symbol, (c) => c.volumeAt(interval)!.visible = !c.volumeAt(interval)!.visible, label: 'Volume visibility'))
       else if (c != null)
-        MenuItem('Add volume', iconName: 'chart', onSelect: () => store.editConfig(symbol, (c) => c.addItem(LayerItem.volume()),
+        MenuItem('Add volume', iconName: 'chart', onSelect: () => store.editConfig(symbol, (c) => c.addItem(LayerItem.volume(id: newId('v')), layerId: c.chartLayerFor(interval).id),
             label: 'Add volume')),
       MenuItem(store.pref<bool>('chart.grid') ? 'Hide grid' : 'Show grid', iconName: 'table',
           onSelect: () => store.setPref('chart.grid', !store.pref<bool>('chart.grid'))),
@@ -1248,12 +1262,15 @@ class ChartPanel {
     final chg = raw != null && prev != null ? (raw.close - prev.close) / prev.close * 100 : null;
     final cls = chg == null ? '' : chg >= 0 ? '.up' : '.down';
     final c = cfg;
-    final priceShown = c == null || c.itemShown(c.price);
+    final priceShown = c == null || c.itemShownAt(c.priceAt(interval), interval);
     replace(_legend, [
       h('div.legend-row.legend-main${priceShown ? '' : '.dim'}', [
         h('button.legend-symbol', symbol, {'type': 'button', 'data-tip': 'Change symbol (or just start typing)'},
             {'click': (_) => window.dispatchEvent(CustomEvent('open-symbol-search'))}),
         h('span.legend-interval', intervalLabel(interval)),
+        if (c != null && c.multiChart)
+          h('span.legend-layer', c.chartLayerFor(interval).name,
+              {'data-tip': 'Layer on screen at ${intervalLabel(interval)}. Each layer with its own price chart can be tied to an interval'}),
         if (bar != null)
           h('span.ohlc', [
             h('span.muted', 'O'), h('b$cls', fmt(bar.open)),
@@ -1267,10 +1284,10 @@ class ChartPanel {
           h('span.ind-actions.main-actions', [
             h('button.legend-x', icon(priceShown ? 'eye' : 'eye-off', size: 13),
                 {'type': 'button', 'aria-label': 'Toggle price chart'}, {
-              'click': (_) => store.editConfig(symbol, (c) => c.price.visible = !c.price.visible, label: 'Price visibility'),
+              'click': (_) => store.editConfig(symbol, (c) => c.priceAt(interval).visible = !c.priceAt(interval).visible, label: 'Price visibility'),
             }),
             h('button.legend-x', icon('settings', size: 13), {'type': 'button', 'aria-label': 'Price chart settings'},
-                {'click': (_) => editLayerItem(symbol, c.price.id)}),
+                {'click': (_) => editLayerItem(symbol, c.priceAt(interval).id)}),
           ]),
         if (_loading) h('span.muted', 'loading…'),
       ]),

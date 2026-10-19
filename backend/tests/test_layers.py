@@ -95,3 +95,9 @@ def test_agent_sees_the_users_layers():
 
     view = json.loads(get_chart_view())
     assert view["symbol"] == "SPY" and view["layers"][1]["visible"] is False
+    tf = {"layers": [{"id": "main", "name": "Daily", "interval": "1d", "items": [{"id": "price", "kind": "price"}]},
+                     {"id": "e", "name": "Entry", "interval": "30m", "items": [{"id": "p2", "kind": "price"}]},
+                     {"id": "lv", "name": "Levels", "items": []}]}
+    workspace.save_chart_config("SPY", tf)
+    s = workspace.layers_summary("SPY")
+    assert [(x.get("interval"), x.get("chart")) for x in s] == [("1d", True), ("30m", True), (None, None)]

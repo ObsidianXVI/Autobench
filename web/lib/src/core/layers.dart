@@ -2,6 +2,13 @@
 // layers (top of the list = top of the drawing order). A layer holds items – the price chart,
 // volume, indicators and other symbols' series – plus the drawings whose `layer` field names it.
 // Layers and items can be hidden, locked (drawings), reordered and moved between layers.
+//
+// Timeframes: a layer can be tied to one interval, and any number of layers can hold their own
+// price chart ("chart layers"). At a given interval the chart shows exactly one chart layer – the
+// one tied to that interval, else the one tied to none (the default), else the bottom one – with
+// its series; the other chart layers' series are hidden. Layers without a price chart add their
+// series and drawings on every interval, or only on theirs when tied to one. So a "Daily" layer
+// (price, SMA 50/200) and an "Entry" layer (price on 30m, VWAP, RSI) switch with the interval.
 import 'dart:math' as math;
 
 import 'json.dart';
@@ -41,9 +48,9 @@ class LayerItem {
     this.display = 'line',
   }) : params = params ?? {};
 
-  factory LayerItem.price({String chartType = 'candles'}) =>
-      LayerItem(id: 'price', kind: ItemKind.price, chartType: chartType, pane: 'main');
-  factory LayerItem.volume({String pane = 'auto'}) => LayerItem(id: 'volume', kind: ItemKind.volume, pane: pane);
+  factory LayerItem.price({String id = 'price', String chartType = 'candles'}) =>
+      LayerItem(id: id, kind: ItemKind.price, chartType: chartType, pane: 'main');
+  factory LayerItem.volume({String id = 'volume', String pane = 'auto'}) => LayerItem(id: id, kind: ItemKind.volume, pane: pane);
   factory LayerItem.indicator(String id, String name, [Map<String, Object>? params]) =>
       LayerItem(id: id, kind: ItemKind.indicator, name: name, params: params);
   factory LayerItem.compare(String id, String symbol, {String pane = 'auto', String display = 'line'}) =>
@@ -105,13 +112,20 @@ class Layer {
   String name;
   bool visible;
   bool locked;
+  String? interval; // tied to this interval only (null = every interval)
   final List<LayerItem> items;
 
-  Layer({required this.id, required this.name, this.visible = true, this.locked = false, List<LayerItem>? items})
+  Layer({required this.id, required this.name, this.visible = true, this.locked = false, this.interval, List<LayerItem>? items})
       : items = items ?? [];
+
+  /// Holds its own price chart.
+  bool get hasPrice => items.any((i) => i.kind == ItemKind.price);
+  LayerItem? get priceItem => items.where((i) => i.kind == ItemKind.price).firstOrNull;
+  LayerItem? get volumeItem => items.where((i) => i.kind == ItemKind.volume).firstOrNull;
 
   Map<String, Object?> toJson() => {
         'id': id, 'name': name, 'visible': visible, 'locked': locked,
+        if (interval != null) 'interval': interval,
         'items': [for (final i in items) i.toJson()],
       };
 
@@ -120,6 +134,7 @@ class Layer {
         name: j['name'].s ?? 'Layer',
         visible: j['visible'].b ?? true,
         locked: j['locked'].b ?? false,
+        interval: (j['interval'].s ?? '').isEmpty ? null : j['interval'].s,
         items: [for (final i in j['items'].list) LayerItem.fromJson(i)],
       );
 }
@@ -178,22 +193,35 @@ class SymbolConfig {
     return SymbolConfig(layers: [Layer(id: mainLayerId, name: 'Main', items: items)], scale: scale);
   }
 
-  /// Repairs invariants: exactly one price item, ids unique, active layer exists, at least one layer.
+  /// Repairs invariants: at least one layer and one price chart, at most one price chart and one
+  /// volume per layer, unique ids (a repeated price/volume id is renamed, other repeats dropped),
+  /// and an active layer that exists.
   void normalize() {
     if (layers.isEmpty) layers.add(Layer(id: mainLayerId, name: 'Main'));
     final seen = <String>{};
-    var hasPrice = false;
     for (final l in layers) {
-      l.items.removeWhere((i) {
+      var price = false, volume = false;
+      final keep = <LayerItem>[];
+      for (var i in l.items) {
         if (i.kind == ItemKind.price) {
-          if (hasPrice) return true;
-          hasPrice = true;
+          if (price) continue;
+          price = true;
+        } else if (i.kind == ItemKind.volume) {
+          if (volume) continue;
+          volume = true;
         }
-        if (!seen.add(i.id)) return true;
-        return false;
-      });
+        if (seen.contains(i.id)) {
+          if (i.kind != ItemKind.price && i.kind != ItemKind.volume) continue;
+          i = LayerItem.fromJson(J({...i.toJson(), 'id': newId(i.kind == ItemKind.price ? 'p' : 'v')}));
+        }
+        seen.add(i.id);
+        keep.add(i);
+      }
+      l.items
+        ..clear()
+        ..addAll(keep);
     }
-    if (!hasPrice) bottomLayer.items.insert(0, LayerItem.price());
+    if (!layers.any((l) => l.hasPrice)) bottomLayer.items.insert(0, LayerItem.price(id: seen.contains('price') ? newId('p') : 'price'));
     if (!layers.any((l) => l.id == activeLayer)) activeLayer = layers.first.id;
   }
 
@@ -217,26 +245,108 @@ class SymbolConfig {
     return null;
   }
 
+  /// The first price chart, whatever the interval (the default chart's when there is only one).
   LayerItem get price {
     for (final l in layers) {
-      for (final i in l.items) {
-        if (i.kind == ItemKind.price) return i;
-      }
+      final p = l.priceItem;
+      if (p != null) return p;
     }
     normalize(); // adds one
     return price;
   }
 
+  /// The first volume item, whatever the interval.
   LayerItem? get volume {
     for (final l in layers) {
-      for (final i in l.items) {
-        if (i.kind == ItemKind.volume) return i;
-      }
+      final v = l.volumeItem;
+      if (v != null) return v;
     }
     return null;
   }
 
-  /// Items that are drawn: visible items in visible layers, bottom layer first.
+  // ---------------------------------------------------------------- timeframes
+
+  List<Layer> get chartLayers => [for (final l in layers) if (l.hasPrice) l];
+
+  /// More than one layer holds a price chart (the chart then depends on the interval).
+  bool get multiChart => chartLayers.length > 1;
+
+  /// The chart layer shown at [interval]: the one tied to it, else the default (tied to none), else
+  /// the bottom one. Top-most wins a tie.
+  Layer chartLayerFor(String interval) {
+    var charts = chartLayers;
+    if (charts.isEmpty) {
+      normalize();
+      charts = chartLayers;
+    }
+    return charts.where((l) => l.interval == interval).firstOrNull ??
+        charts.where((l) => l.interval == null).firstOrNull ??
+        charts.last;
+  }
+
+  /// Whether [l]'s series are part of the chart at [interval] (visibility aside).
+  bool appliesAt(Layer l, String interval) =>
+      l.hasPrice ? identical(l, chartLayerFor(interval)) : (l.interval == null || l.interval == interval);
+
+  /// Whether [l]'s drawings belong on the chart at [interval] (visibility aside). Drawings only follow
+  /// the layer's own interval tie, so key levels kept in an untied chart layer stay on every interval.
+  bool drawingsApplyAt(Layer l, String interval) => l.interval == null || l.interval == interval;
+
+  LayerItem priceAt(String interval) => chartLayerFor(interval).priceItem!;
+
+  LayerItem? volumeAt(String interval) {
+    for (final l in layers) {
+      if (!appliesAt(l, interval)) continue;
+      final v = l.volumeItem;
+      if (v != null) return v;
+    }
+    return null;
+  }
+
+  /// Items drawn at [interval]: visible items of visible layers that apply there, bottom layer first.
+  List<LayerItem> shownAt(String interval) => [
+        for (final l in layers.reversed)
+          if (l.visible && appliesAt(l, interval))
+            for (final i in l.items)
+              if (i.visible) i,
+      ];
+
+  /// Items of the layers that apply at [interval] (any visibility), bottom layer first.
+  List<LayerItem> allAt(String interval) => [for (final l in layers.reversed) if (appliesAt(l, interval)) ...l.items];
+
+  bool itemShownAt(LayerItem item, String interval) {
+    final f = find(item.id);
+    return f != null && f.$1.visible && item.visible && appliesAt(f.$1, interval);
+  }
+
+  List<(LayerItem, IndicatorRef)> indicatorItemsAt(String interval) => [
+        for (final i in allAt(interval))
+          if (i.kind == ItemKind.indicator) (i, i.ref),
+      ];
+
+  /// Gives layer [layerId] its own price chart (and volume) tied to [interval]; a layer that already
+  /// has one is just re-tied.
+  void addChart(String layerId, String interval) {
+    final l = layer(layerId);
+    if (l == null) return;
+    l.interval = interval;
+    if (!l.hasPrice) {
+      l.items.insert(0, LayerItem.price(id: newId('p'), chartType: chartLayerFor(interval).priceItem!.chartType));
+      if (l.volumeItem == null) l.items.insert(1, LayerItem.volume(id: newId('v')));
+    }
+  }
+
+  /// Removes a layer's price chart (and its volume); the last price chart stays.
+  bool removeChart(String layerId) {
+    final l = layer(layerId);
+    if (l == null || !l.hasPrice || chartLayers.length <= 1) return false;
+    l.items.removeWhere((i) => i.kind == ItemKind.price || i.kind == ItemKind.volume);
+    return true;
+  }
+
+  // ---------------------------------------------------------------- any interval
+
+  /// Visible items of visible layers, whatever the interval, bottom layer first.
   List<LayerItem> get shown => [
         for (final l in layers.reversed)
           if (l.visible)
@@ -244,7 +354,7 @@ class SymbolConfig {
               if (i.visible) i,
       ];
 
-  /// All items (any visibility), bottom layer first.
+  /// All items (any visibility or interval), bottom layer first.
   List<LayerItem> get all => [for (final l in layers.reversed) ...l.items];
 
   bool itemShown(LayerItem item) {
@@ -288,25 +398,24 @@ class SymbolConfig {
     return l;
   }
 
-  /// Removes a layer; returns its items so the caller can delete its drawings too. The last
-  /// remaining layer cannot be removed; the price item moves to the layer below if needed.
+  /// Removes a layer. The last remaining layer cannot be removed; the last price chart moves to the
+  /// layer below.
   bool removeLayer(String id) {
     if (layers.length <= 1) return false;
     final l = layer(id);
     if (l == null) return false;
     final idx = layers.indexOf(l);
     layers.remove(l);
-    final price = l.items.where((i) => i.kind == ItemKind.price).firstOrNull;
-    if (price != null) layers[math.min(idx, layers.length - 1)].items.insert(0, price);
+    final price = l.priceItem;
+    if (price != null && !layers.any((x) => x.hasPrice)) layers[math.min(idx, layers.length - 1)].items.insert(0, price);
     if (activeLayer == id) activeLayer = layers[math.min(idx, layers.length - 1)].id;
     return true;
   }
 
   Layer duplicateLayer(String id) {
     final src = layer(id)!;
-    final copy = Layer(id: newId('l'), name: '${src.name} copy', visible: src.visible, locked: src.locked, items: [
-      for (final i in src.items)
-        if (i.kind != ItemKind.price) LayerItem.fromJson(J({...i.toJson(), 'id': newId('i')})),
+    final copy = Layer(id: newId('l'), name: '${src.name} copy', visible: src.visible, locked: src.locked, interval: src.interval, items: [
+      for (final i in src.items) LayerItem.fromJson(J({...i.toJson(), 'id': newId('i')})),
     ]);
     layers.insert(layers.indexOf(src), copy);
     return copy;
@@ -338,7 +447,8 @@ class SymbolConfig {
 
   bool removeItem(String itemId) {
     final f = find(itemId);
-    if (f == null || f.$2.kind == ItemKind.price) return false; // the price chart can be hidden, not removed
+    if (f == null) return false;
+    if (f.$2.kind == ItemKind.price && chartLayers.length <= 1) return false; // the last price chart can be hidden, not removed
     f.$1.items.remove(f.$2);
     // items attached to the removed one fall back to their default pane
     for (final i in all) {
@@ -347,13 +457,19 @@ class SymbolConfig {
     return true;
   }
 
-  void moveItem(String itemId, String toLayer, {int? index}) {
+  /// Moves an item to another layer; false when the target already has a price chart / volume.
+  bool moveItem(String itemId, String toLayer, {int? index}) {
     final f = find(itemId);
     final target = layer(toLayer);
-    if (f == null || target == null) return;
+    if (f == null || target == null) return false;
+    if (!identical(f.$1, target) &&
+        ((f.$2.kind == ItemKind.price && target.hasPrice) || (f.$2.kind == ItemKind.volume && target.volumeItem != null))) {
+      return false;
+    }
     f.$1.items.remove(f.$2);
     final at = index == null ? target.items.length : index.clamp(0, target.items.length);
     target.items.insert(at, f.$2);
+    return true;
   }
 
   /// Indicator refs of every indicator item (any visibility), in [all] order.

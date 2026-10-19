@@ -256,6 +256,7 @@ textarea.input { resize: vertical; min-height: 70px; }
 .legend-symbol { border: 0; background: none; padding: 0 2px; font-weight: 700; font-size: 14px; color: var(--text); border-radius: 4px; }
 .legend-symbol:hover { background: var(--hover); }
 .legend-interval { color: var(--text-muted); font-weight: 600; }
+.legend-layer { font-size: 11px; font-weight: 600; color: var(--accent); background: var(--accent-soft); padding: 0 6px; border-radius: 9px; }
 .ohlc { display: inline-flex; gap: 4px; font-variant-numeric: tabular-nums; pointer-events: none !important; }
 .ohlc b { font-weight: 500; margin-right: 4px; }
 .ind-row { color: var(--text-muted); }
@@ -773,3 +774,11 @@ button.panel-title:hover { background: var(--hover); }
   .proposal-grid { grid-template-columns: minmax(0, 1fr); }
   .nav-btn.trade-nav span.small { display: none; }
 }
+
+/* layer timeframes */
+.tf-chip { display: inline-flex; flex: none; align-items: center; gap: 3px; margin-left: 4px; font-size: 10.5px; font-weight: 600; line-height: 16px;
+  padding: 0 6px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text-muted); cursor: pointer; }
+.tf-chip svg { width: 12px; height: 12px; }
+.tf-chip.priced { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); background: var(--accent-soft); }
+.tf-chip:hover { filter: brightness(1.08); }
+.layer-head.off-tf .layer-name, .layer:has(> .layer-head.off-tf) .layer-row { opacity: 0.5; }

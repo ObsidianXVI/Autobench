@@ -64,6 +64,11 @@ part of the codebase, and its only dependency is `package:web`. For UI developme
   renamed, duplicated, reordered and deleted, and rows dragged between them in the Layers panel. New
   items and drawings go to the active layer; the agent's drawings go to an "Agent" layer. "Save as
   default" makes a symbol's layers the template for symbols you have not set up yet.
+- **A setup per timeframe**: give any layer its own price chart at an interval (layer ⋯ → *Add price
+  chart*), e.g. a *Daily* layer with SMA 50/200 and an *Entry* layer at 30m with VWAP and RSI. The chart
+  shows the layer for its interval (or the untied default), so switching the interval switches the
+  setup, and clicking a layer's chip switches the interval. Layers without a chart can be tied to an
+  interval too (*Show at*), or show everywhere.
 - **State**: layouts, the open page and panels, zoom, intervals and every preference (theme, grid,
   colors, favorite intervals, sorting, filters) are saved to the server, mirrored to localStorage
   and flushed when the tab is hidden, so a reload or another browser picks up where you left off.

@@ -275,10 +275,10 @@ class App {
       request('/api/view', method: 'PUT', body: {
         'symbol': c.symbol.value,
         'interval': c.interval.value,
-        // what is on screen: the indicators of every visible layer
+        // what is on screen: the indicators of the visible layers that apply at this interval
         'indicators': [
           if (cfg != null)
-            for (final i in cfg.shown)
+            for (final i in cfg.shownAt(c.interval.value))
               if (i.kind == ItemKind.indicator) i.ref.toJson(),
         ],
       }).catchError((Object _) => const J(null));

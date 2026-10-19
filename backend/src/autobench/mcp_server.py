@@ -596,7 +596,9 @@ def get_research_brief(symbol: Symbol) -> Any:
 @tool()
 def get_chart_view() -> Any:
     """What the user's chart is showing: symbol, interval, visible range, indicators, and the layers the user
-    keeps on this symbol (each layer groups price, volume, indicators, other symbols and drawings)."""
+    keeps on this symbol (each layer groups price, volume, indicators, other symbols and drawings). A layer
+    with `chart: true` has its own price chart; with an `interval` it is the user's setup for that interval
+    (e.g. a daily layer and a 30m entry layer), and switching the chart's interval switches layers."""
     view = dict(workspace.get_view())
     layers = workspace.layers_summary(view.get("symbol", ""))
     if layers is not None:

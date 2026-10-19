@@ -186,7 +186,7 @@ class ChartPage {
     final c = chart;
     final iv = c.interval.value;
     final cfg = _cfg;
-    final ct = cfg?.price.chartType ?? 'candles';
+    final ct = cfg?.priceAt(store.activeChart.interval.value).chartType ?? 'candles';
     final favorites = store.prefList('chart.favoriteIntervals');
     final ctIcon = ct == 'candles' ? 'candles' : ct == 'heikin' ? 'heikin' : ct;
     replace(_toolbar, [
@@ -218,7 +218,7 @@ class ChartPage {
         showMenu([
           for (final (k, label) in chartTypes)
             MenuItem(label, iconName: k == 'heikin' ? 'heikin' : k, checked: k == ct,
-                onSelect: () => _editCfg((cfg) => cfg.price.chartType = k, 'Chart type')),
+                onSelect: () => _editCfg((cfg) => cfg.priceAt(store.activeChart.interval.value).chartType = k, 'Chart type')),
         ], anchor: e.currentTarget as Element);
       }),
       _tbButton([icon('fx', size: 17), h('span', 'Indicators')], 'Indicators (/)', (_) => _indicators(), cls: 'wide'),
@@ -257,7 +257,7 @@ class ChartPage {
     final cfg = _cfg;
     if (cfg == null) return;
     openIndicatorPicker(
-        current: [for (final (_, r) in cfg.indicatorItems) r],
+        current: [for (final (_, r) in cfg.indicatorItemsAt(store.activeChart.interval.value)) r],
         onAdd: (r) => _editCfg((c) => c.addItem(LayerItem.indicator(newId('i'), r.name, Map.of(r.params))), 'Add ${r.name}'));
   }
 

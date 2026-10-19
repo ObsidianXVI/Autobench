@@ -1,6 +1,9 @@
 // Layers panel: the active chart symbol's layers (top first). Each layer holds series items (price,
 // volume, indicators, other symbols) and drawings; layers and items can be shown/hidden, locked,
 // renamed, reordered and moved between layers by drag and drop. Everything is remembered per symbol.
+// Layers can hold their own price chart and be tied to an interval (see core/layers.dart): rows that
+// are not on screen at the focused chart's interval are dimmed, and clicking a tied layer switches
+// the chart to its interval.
 
 import 'package:web/web.dart';
 
@@ -37,6 +40,7 @@ class LayersPanel {
     void track() {
       for (final c in store.charts) {
         _scope.listen(c.symbol, (_) => _load());
+        _scope.listen(c.interval, (_) => _render());
       }
     }
 
@@ -54,6 +58,35 @@ class LayersPanel {
   void dispose() => _scope.dispose();
 
   String get symbol => store.activeChart.symbol.value;
+  String get interval => store.activeChart.interval.value;
+
+  /// Shows [iv] in the focused chart (synced charts follow).
+  void _showInterval(String? iv) {
+    if (iv != null && iv != interval) store.activeChart.interval.value = iv;
+  }
+
+  void _activate(Layer l) {
+    _edit((c) => c.activeLayer = l.id, 'Activate ${l.name}');
+    _showInterval(l.interval);
+  }
+
+  /// Chip on the layer header: its price chart and/or the interval it is tied to.
+  HTMLElement? _tfChip(SymbolConfig cfg, Layer l) {
+    if (l.interval == null && !(l.hasPrice && cfg.multiChart)) return null; // nothing to say with one untied chart
+    final label = l.interval != null ? intervalLabel(l.interval!) : 'default';
+    final tip = l.hasPrice
+        ? (l.interval != null
+            ? 'Price chart at ${intervalLabel(l.interval!)}: shown with this layer\'s series when the chart is on ${intervalLabel(l.interval!)}'
+            : 'Default price chart: shown at every interval that has no layer of its own')
+        : 'Only shown at ${intervalLabel(l.interval!)}';
+    return h('span.tf-chip${l.hasPrice ? '.priced' : ''}', [if (l.hasPrice) icon('candles', size: 12), label],
+        {'role': 'button', 'data-tip': tip, 'aria-label': 'Layer ${l.name} timeframe $label'}, {
+      'click': (e) {
+        e.stopPropagation();
+        _activate(l);
+      },
+    });
+  }
 
   Future<void> _load() async {
     _render();
@@ -83,7 +116,8 @@ class LayersPanel {
     replace(_body, [
       for (final l in cfg.layers) _layer(cfg, l, [for (final a in drawings) if (cfg.layerOfDrawing(a.layer, a.author) == l) a]),
       h('div.muted.tiny.pad', 'New indicators, symbols and drawings go to the active layer. Drag rows between layers; '
-          'drag a layer header to reorder.'),
+          'drag a layer header to reorder. Give a layer its own price chart at an interval (⋯ → Add price chart) to '
+          'keep a separate setup per timeframe; clicking it switches the chart.'),
     ]);
   }
 
@@ -91,7 +125,8 @@ class LayersPanel {
     final active = cfg.activeLayer == l.id;
     final collapsed = _collapsed.contains('$symbol:${l.id}');
     final count = l.items.length + drawings.length;
-    final head = h('div.layer-head${active ? '.active' : ''}${l.visible ? '' : '.dim'}', [
+    final onScreen = cfg.appliesAt(l, interval) || (drawings.isNotEmpty && cfg.drawingsApplyAt(l, interval));
+    final head = h('div.layer-head${active ? '.active' : ''}${l.visible ? '' : '.dim'}${onScreen ? '' : '.off-tf'}', [
       h('button.icon-btn.small', icon(collapsed ? 'chev-right' : 'chev-down', size: 13),
           {'type': 'button', 'aria-label': collapsed ? 'Expand' : 'Collapse'}, {
         'click': (e) {
@@ -116,6 +151,7 @@ class LayersPanel {
         },
       }),
       h('span.layer-name', [if (l.id == agentLayerId) h('span.badge-agent', '✦'), ' ', l.name]),
+      ?_tfChip(cfg, l),
       if (active) h('span.tag', 'active'),
       h('span.spacer'),
       h('span.muted.tiny', '$count'),
@@ -127,9 +163,13 @@ class LayersPanel {
     ], {
       'draggable': 'true',
       'data-layer': l.id,
-      'data-tip': active ? 'Active layer: new items and drawings go here' : 'Click to make this the active layer',
+      'data-tip': [
+        active ? 'Active layer: new items and drawings go here' : 'Click to make this the active layer',
+        if (l.interval != null && l.interval != interval) 'and show ${intervalLabel(l.interval!)}',
+        if (!onScreen) '(not on screen at ${intervalLabel(interval)})',
+      ].join(' '),
     }, {
-      'click': (_) => _edit((c) => c.activeLayer = l.id, 'Activate ${l.name}'),
+      'click': (_) => _activate(l),
       'dblclick': (_) => _rename(l),
       'dragstart': (e) => _startDrag(e as DragEvent, 'layer', l.id),
       'dragover': (e) => _over(e as DragEvent),
@@ -147,7 +187,7 @@ class LayersPanel {
   }
 
   HTMLElement _item(SymbolConfig cfg, Layer l, LayerItem item, int index) {
-    final shown = cfg.itemShown(item);
+    final shown = cfg.itemShownAt(item, interval);
     return h('div.layer-row${shown ? '' : '.dim'}', [
       h('button.icon-btn.small', icon(item.visible ? 'eye' : 'eye-off', size: 13),
           {'type': 'button', 'aria-label': '${item.visible ? 'Hide' : 'Show'} ${item.label}'}, {
@@ -166,7 +206,7 @@ class LayersPanel {
             e.stopPropagation();
             editLayerItem(symbol, item.id);
           }}),
-      if (item.kind != ItemKind.price)
+      if (item.kind != ItemKind.price || cfg.multiChart)
         h('button.icon-btn.small', icon('x', size: 13), {'type': 'button', 'aria-label': 'Remove ${item.label}'}, {
           'click': (e) {
             e.stopPropagation();
@@ -266,7 +306,7 @@ class LayersPanel {
       case 'layer':
         _edit((c) => c.placeLayerBefore(id, layerId), 'Reorder layers');
       case 'item':
-        _edit((c) => c.moveItem(id, layerId), 'Move to layer');
+        _moveItem(id, layerId);
       case 'drawing':
         _moveDrawing(id, layerId);
     }
@@ -279,12 +319,19 @@ class LayersPanel {
     final kind = _dragKind, id = _dragId;
     _dragKind = _dragId = null;
     if (kind == 'item' && id != null) {
-      _edit((c) => c.moveItem(id, layerId, index: index), 'Move item');
+      _moveItem(id, layerId, index);
     } else if (kind == 'drawing' && id != null) {
       _moveDrawing(id, layerId);
     } else if (kind == 'layer' && id != null) {
       _edit((c) => c.placeLayerBefore(id, layerId), 'Reorder layers');
     }
+  }
+
+  void _moveItem(String id, String layerId, [int? index]) {
+    final kind = store.configNow(symbol)?.find(id)?.$2.kind;
+    var ok = true;
+    _edit((c) => ok = c.moveItem(id, layerId, index: index), 'Move item');
+    if (!ok) toast('That layer already has its own ${kind == ItemKind.volume ? 'volume' : 'price chart'}', kind: 'warn');
   }
 
   void _moveDrawing(String id, String layerId) {
@@ -324,8 +371,31 @@ class LayersPanel {
             if (s == symbol) return;
             _edit((c) => c.addItem(LayerItem.compare(newId('c'), s, pane: 'new'), layerId: l.id), 'Add $s');
           })),
-      if (cfg.volume == null)
-        MenuItem('Add volume', iconName: 'chart', onSelect: () => _edit((c) => c.addItem(LayerItem.volume(), layerId: l.id), 'Add volume')),
+      if (!l.hasPrice)
+        MenuItem('Add price chart', iconName: 'candles', submenu: [
+          for (final iv in intervals)
+            MenuItem('at ${intervalLabel(iv)}', onSelect: () {
+              _edit((c) {
+                c.addChart(l.id, iv);
+                c.activeLayer = l.id;
+              }, 'Add price chart');
+              _showInterval(iv);
+            }),
+        ]),
+      if (l.volumeItem == null)
+        MenuItem('Add volume', iconName: 'chart',
+            onSelect: () => _edit((c) => c.addItem(LayerItem.volume(id: newId('v')), layerId: l.id), 'Add volume')),
+      MenuItem(l.hasPrice ? 'Chart interval' : 'Show at', iconName: 'clock', submenu: [
+        MenuItem(l.hasPrice ? 'Default (intervals without their own layer)' : 'Every interval', checked: l.interval == null,
+            onSelect: () => _edit((c) => c.layer(l.id)?.interval = null, 'Layer interval')),
+        for (final iv in intervals)
+          MenuItem(intervalLabel(iv), checked: l.interval == iv, onSelect: () {
+            _edit((c) => c.layer(l.id)?.interval = iv, 'Layer interval');
+            if (l.hasPrice) _showInterval(iv);
+          }),
+      ]),
+      if (l.hasPrice && cfg.multiChart)
+        MenuItem('Remove price chart', iconName: 'x', onSelect: () => _edit((c) => c.removeChart(l.id), 'Remove price chart')),
       MenuItem('Duplicate', iconName: 'copy', onSelect: () => _edit((c) => c.duplicateLayer(l.id), 'Duplicate layer')),
       MenuItem('Move up', iconName: 'chev-up', disabled: i == 0, onSelect: () => _edit((c) => c.moveLayer(l.id, -1), 'Move layer')),
       MenuItem('Move down', iconName: 'chev-down', disabled: i == cfg.layers.length - 1,
