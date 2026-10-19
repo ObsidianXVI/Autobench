@@ -140,3 +140,22 @@ def format_ts(t: int, intraday: bool) -> str:
 
 def to_rfc3339(t: int) -> str:
     return datetime.fromtimestamp(t, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def in_regular_session(t: datetime) -> bool:
+    """Whether an aware/UTC-naive datetime falls in US regular trading hours (Mon-Fri 9:30-16:00 ET;
+    exchange holidays are not modelled)."""
+    et = (t if t.tzinfo else t.replace(tzinfo=UTC)).astimezone(ET)
+    return et.weekday() < 5 and (9, 30) <= (et.hour, et.minute) < (16, 0)
+
+
+def next_session_close(t: datetime) -> datetime:
+    """16:00 ET of the session in progress at t, or of the next weekday session (as naive UTC)."""
+    et = (t if t.tzinfo else t.replace(tzinfo=UTC)).astimezone(ET)
+    day = et.date()
+    if et.weekday() >= 5 or (et.hour, et.minute) >= (16, 0):
+        day += timedelta(days=1)
+    while day.weekday() >= 5:
+        day += timedelta(days=1)
+    close = datetime(day.year, day.month, day.day, 16, 0, tzinfo=ET)
+    return close.astimezone(UTC).replace(tzinfo=None)

@@ -27,6 +27,7 @@ from sqlalchemy import delete, select
 from .. import db
 from ..config import get_settings
 from ..schemas import ClosePosition, OrderModify, OrderSpec, TradingSettings
+from ..timeutil import in_regular_session, next_session_close
 from .broker import DONE_STATUSES, OPEN_STATUSES, Broker, BrokerError, create_broker, parse_ref
 from .events import bus
 
@@ -465,13 +466,20 @@ class TradingService:
         return self.settings().mode == "auto" and paper is True
 
     # --- tickets ----------------------------------------------------------------------------------
+    def _expiry(self, created: datetime) -> datetime:
+        """A proposal lives ticket_ttl_minutes; one made outside regular hours lives at least until the
+        next session's close, so it does not expire before the user could act on it."""
+        deadline = created + timedelta(minutes=self.settings().ticket_ttl_minutes)
+        if not in_regular_session(created):
+            deadline = max(deadline, next_session_close(created))
+        return deadline
+
     def _ticket_dict(self, r: db.OrderTicketRow) -> dict:
         return {"id": r.id, "symbol": r.symbol, "spec": r.spec, "source": r.source, "status": r.status,
                 "rationale": r.rationale, "analysis_id": r.analysis_id, "check": r.check, "order_ids": r.order_ids,
                 "message": r.message, "broker": r.broker, "account": r.account, "created_at": _iso(r.created_at),
                 "updated_at": _iso(r.updated_at), "decided_at": _iso(r.decided_at),
-                "expires_at": _iso(r.created_at + timedelta(minutes=self.settings().ticket_ttl_minutes))
-                if r.status == "pending" else None}
+                "expires_at": _iso(self._expiry(r.created_at)) if r.status == "pending" else None}
 
     def tickets(self, status: str | None = None, symbol: str | None = None, limit: int = 100) -> list[dict]:
         with db.session_scope() as s:
@@ -585,12 +593,13 @@ class TradingService:
         return t
 
     def expire_tickets(self) -> int:
-        cutoff = _now() - timedelta(minutes=self.settings().ticket_ttl_minutes)
+        now = _now()
         expired = []
         with db.session_scope() as s:
-            for r in s.scalars(select(db.OrderTicketRow).where(db.OrderTicketRow.status == "pending",
-                                                               db.OrderTicketRow.created_at < cutoff)).all():
-                r.status, r.message, r.updated_at = "expired", "Not approved in time", _now()
+            for r in s.scalars(select(db.OrderTicketRow).where(db.OrderTicketRow.status == "pending")).all():
+                if self._expiry(r.created_at) > now:
+                    continue
+                r.status, r.message, r.updated_at = "expired", "Not approved in time", now
                 expired.append(self._ticket_dict(r))
         for t in expired:
             bus.publish("trading.ticket", t)

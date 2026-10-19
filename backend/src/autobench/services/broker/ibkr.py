@@ -18,6 +18,9 @@ from typing import Any, Callable
 from .base import Broker, BrokerError, make_ref, parse_ref
 
 log = logging.getLogger(__name__)
+# ib_async logs every failed connection attempt at ERROR; connection state is reported (once per
+# change) by this module and shown in the UI instead
+logging.getLogger("ib_async").setLevel(logging.CRITICAL)
 
 _TYPE_TO_IB = {"market": "MKT", "limit": "LMT", "stop": "STP", "stop_limit": "STP LMT"}
 _TYPE_FROM_IB = {v: k for k, v in _TYPE_TO_IB.items()}
@@ -145,6 +148,7 @@ class IbkrBroker(Broker):
         self._account: str | None = None
         self._message = "Not connected"
         self._last_attempt = 0.0
+        self._failures = 0
         self._contracts: dict[str, Any] = {}
         self._order_messages: dict[str, str] = {}
         self._ready = threading.Event()
@@ -215,7 +219,8 @@ class IbkrBroker(Broker):
     async def _keepalive(self) -> None:
         while True:
             await asyncio.sleep(3)
-            if self._want and not self.ib.isConnected() and time.time() - self._last_attempt > 10:
+            wait = 10 if self._failures < 6 else 30  # back off after a minute of failures
+            if self._want and not self.ib.isConnected() and time.time() - self._last_attempt > wait:
                 await self._try_connect()
 
     async def _try_connect(self) -> None:
@@ -225,9 +230,14 @@ class IbkrBroker(Broker):
         try:
             await self.ib.connectAsync(self.host, self.port, clientId=self.client_id, timeout=8)
         except Exception as e:  # Gateway not running, wrong port, client id in use, …
-            self._message = f"Cannot reach IB Gateway/TWS at {self.host}:{self.port} ({type(e).__name__}: {e})".strip()
-            self.emit("status", self.status())
+            msg = f"Cannot reach IB Gateway/TWS at {self.host}:{self.port} ({type(e).__name__}: {e})".strip()
+            self._failures += 1
+            if msg != self._message:
+                log.warning("IBKR: %s; retrying in the background", msg)
+                self._message = msg
+                self.emit("status", self.status())
             return
+        self._failures = 0
         accounts = self.ib.managedAccounts()
         self._account = accounts[0] if accounts else None
         self._message = "Connected"

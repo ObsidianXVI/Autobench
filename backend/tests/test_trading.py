@@ -338,3 +338,104 @@ def test_user_exit_orders_are_tagged_and_cleaned_up(client):
     trading._worker.submit(lambda: None).result()
     assert client.get("/api/trading/orders").json() == []
     assert client.get("/api/trading/overview").json()["positions"] == []
+
+
+def test_ibkr_adapter_against_a_fake_ib_client():
+    """Exercise IbkrBroker's order paths on its real event-loop thread with a stand-in for ib_async.IB."""
+    from datetime import datetime as dt
+
+    from ib_async import AccountValue, OrderStatus, PnL, PortfolioItem, Trade, TradeLogEntry
+
+    from autobench.services.broker.ibkr import IbkrBroker
+
+    class FakeIB:
+        def __init__(self):
+            self.placed, self.cancelled, self._trades, self._id = [], [], [], 100
+            self.client = SimpleNamespace(getReqId=self._next)
+
+        def _next(self):
+            self._id += 1
+            return self._id
+
+        def isConnected(self):
+            return True
+
+        async def qualifyContractsAsync(self, c):
+            c.conId = 265598
+            return [c]
+
+        def placeOrder(self, contract, order):
+            self.placed.append((contract, order))
+            existing = next((t for t in self._trades if t.order.orderId == order.orderId), None)
+            if existing:
+                return existing
+            t = Trade(contract=contract, order=order, orderStatus=OrderStatus(orderId=order.orderId, status="Submitted"),
+                      log=[TradeLogEntry(dt.now(UTC), "Submitted", "")])
+            self._trades.append(t)
+            return t
+
+        def trades(self):
+            return self._trades
+
+        def openTrades(self):
+            return [t for t in self._trades if t.orderStatus.status not in ("Cancelled", "Filled")]
+
+        def cancelOrder(self, order):
+            self.cancelled.append(order.orderId)
+            next(t for t in self._trades if t.order is order).orderStatus.status = "Cancelled"
+
+        def accountValues(self, account=""):
+            return [AccountValue("DU9", "NetLiquidation", "50000", "USD", ""), AccountValue("DU9", "AvailableFunds", "40000", "USD", "")]
+
+        def pnl(self, account=""):
+            return [PnL(account="DU9", dailyPnL=-12.5)]
+
+        def portfolio(self, account=""):
+            return [PortfolioItem(contract=SimpleNamespace(symbol="AAPL", secType="STK"),
+                                  position=10, marketPrice=101, marketValue=1010, averageCost=100, unrealizedPNL=10,
+                                  realizedPNL=0, account="DU9")]
+
+        def disconnect(self):
+            pass
+
+    b = IbkrBroker(port=4002)
+    b._start_loop()
+    fake = FakeIB()
+    b.ib, b._account = fake, "DU9"
+    try:
+        assert b.status()["paper"] is True
+        orders = b.place("BRK.B", "T1", {"side": "buy", "qty": 5, "type": "limit", "limit_price": 450.0, "tif": "day"},
+                         take_profit={"side": "sell", "qty": 5, "type": "limit", "limit_price": 480.0, "tif": "gtc"},
+                         stop_loss={"side": "sell", "qty": 5, "type": "stop", "stop_price": 430.0, "tif": "gtc"})
+        (c0, parent), (_, tp), (_, sl) = fake.placed
+        assert c0.symbol == "BRK B" and c0.conId == 265598
+        assert parent.orderType == "LMT" and parent.lmtPrice == 450 and parent.transmit is False and parent.account == "DU9"
+        assert tp.parentId == sl.parentId == parent.orderId and tp.transmit is False and sl.transmit is True
+        assert sl.orderType == "STP" and sl.auxPrice == 430 and sl.tif == "GTC" and tp.ocaGroup == sl.ocaGroup == "ab-T1"
+        assert [o["role"] for o in orders] == ["entry", "take_profit", "stop_loss"] and orders[0]["symbol"] == "BRK.B"
+        assert orders[0]["ticket_id"] == "T1" and orders[1]["status"] == "working"
+        m = b.modify(orders[2]["id"], stop_price=435.0)
+        assert m["stop_price"] == 435 and fake.placed[-1][1].auxPrice == 435 and fake.placed[-1][1].transmit is True
+        b.cancel(orders[0]["id"])
+        assert fake.cancelled == [parent.orderId]
+        with pytest.raises(Exception, match="cancelled"):
+            b.modify(orders[0]["id"], limit_price=1.0)
+        a = b.account()
+        assert a["net_liquidation"] == 50000 and a["daily_pnl"] == -12.5 and a["available_funds"] == 40000
+        assert b.positions()[0] == {"symbol": "AAPL", "qty": 10.0, "avg_cost": 100.0, "market_price": 101, "market_value": 1010,
+                                    "unrealized_pnl": 10, "realized_pnl": 0}
+    finally:
+        b._loop.call_soon_threadsafe(b._loop.stop)
+
+
+def test_proposal_expiry_respects_market_hours():
+    from autobench.timeutil import in_regular_session, next_session_close
+
+    sat = datetime(2026, 10, 17, 18, 0)  # Saturday 14:00 ET (naive UTC)
+    assert not in_regular_session(sat) and next_session_close(sat) == datetime(2026, 10, 19, 20, 0)  # Monday 16:00 ET
+    tue = datetime(2026, 10, 20, 15, 0)  # Tuesday 11:00 ET
+    assert in_regular_session(tue) and next_session_close(tue) == datetime(2026, 10, 20, 20, 0)
+    late = datetime(2026, 10, 23, 21, 30)  # Friday 17:30 ET -> Monday close
+    assert next_session_close(late) == datetime(2026, 10, 26, 20, 0)
+    assert trading._expiry(sat) == datetime(2026, 10, 19, 20, 0)  # weekend proposal waits for Monday
+    assert trading._expiry(tue) == datetime(2026, 10, 20, 19, 0)  # in session: the 240-minute TTL
