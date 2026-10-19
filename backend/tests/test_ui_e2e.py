@@ -101,6 +101,9 @@ def page(browser, server):
     pg.on("console", lambda m: m.type == "error" and errors.append(m.text))
     pg.goto(f"{server}/#chart")
     pg.wait_for_function("window.__autobench && __autobench.bars() > 0", timeout=20000)
+    # the default indicators load asynchronously and add the RSI pane, which resizes the main pane;
+    # wait for it so pixel positions used by a test do not shift underneath it
+    pg.wait_for_function("__autobench.panes() === 2", timeout=20000)
     yield pg
     pg.close()
     errors = [e for e in errors if "favicon" not in e]
