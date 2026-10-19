@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Stop the Autobench server started by scripts/start.sh (or one listening on --port N).
 set -euo pipefail
-source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+# resolve symlinks (e.g. ~/.local/bin/autobench-start) to find the repo
+SELF="${BASH_SOURCE[0]}"
+while [[ -L "$SELF" ]]; do t="$(readlink "$SELF")"; [[ "$t" == /* ]] && SELF="$t" || SELF="$(dirname "$SELF")/$t"; done
+source "$(dirname "$SELF")/_common.sh"
 
 PORT=""
 while [[ $# -gt 0 ]]; do

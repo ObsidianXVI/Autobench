@@ -4,7 +4,10 @@
 #     --rebuild  force a fresh web UI build (otherwise it rebuilds only when web/ sources changed)
 #     --fg       run in the foreground (Ctrl-C to stop) instead of in the background
 set -euo pipefail
-source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+# resolve symlinks (e.g. ~/.local/bin/autobench-start) to find the repo
+SELF="${BASH_SOURCE[0]}"
+while [[ -L "$SELF" ]]; do t="$(readlink "$SELF")"; [[ "$t" == /* ]] && SELF="$t" || SELF="$(dirname "$SELF")/$t"; done
+source "$(dirname "$SELF")/_common.sh"
 
 PORT="" REBUILD=0 FG=0
 while [[ $# -gt 0 ]]; do

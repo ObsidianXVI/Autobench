@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Show whether Autobench is running, and where.
 set -uo pipefail
-source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+# resolve symlinks (e.g. ~/.local/bin/autobench-start) to find the repo
+SELF="${BASH_SOURCE[0]}"
+while [[ -L "$SELF" ]]; do t="$(readlink "$SELF")"; [[ "$t" == /* ]] && SELF="$t" || SELF="$(dirname "$SELF")/$t"; done
+source "$(dirname "$SELF")/_common.sh"
 
 PORT="${1:-}"
 [[ "$PORT" == "--port" ]] && PORT="${2:-}"
