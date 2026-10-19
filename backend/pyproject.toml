@@ -1,6 +1,6 @@
 [project]
 name = "autobench"
-version = "0.2.0"
+version = "0.3.0"
 description = "Stock charting + research backend with an MCP interface for AI agents"
 requires-python = ">=3.12"
 dependencies = [
