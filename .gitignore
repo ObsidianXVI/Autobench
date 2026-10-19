@@ -12,6 +12,7 @@ htmlcov/
 .env
 backend/data/*.db
 backend/data/*.db-*
+backend/data/universe/
 
 # Dart (web UI)
 .dart_tool/
