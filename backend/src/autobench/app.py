@@ -85,6 +85,11 @@ class ScreenBody(BaseModel):
     limit: int = Field(50, ge=1, le=500)
 
 
+class InboxBody(BaseModel):
+    ids: list[str] | None = None  # None = every entry
+    read: bool = True
+
+
 class AlertBody(BaseModel):
     symbol: str
     kind: str
@@ -438,6 +443,18 @@ def create_app() -> FastAPI:
     @app.delete("/api/alerts/{alert_id}")
     def alerts_delete(alert_id: str):
         return alerts_svc.delete(alert_id)
+
+    @app.get("/api/inbox")
+    def inbox_list(limit: int = 100, unread: bool = False):
+        return alerts_svc.inbox(limit, unread)
+
+    @app.post("/api/inbox/read")
+    def inbox_read(b: InboxBody):
+        return alerts_svc.mark_read(b.ids, b.read)
+
+    @app.post("/api/inbox/clear")
+    def inbox_clear(b: InboxBody):
+        return alerts_svc.clear_inbox(b.ids)
 
     @app.post("/api/alerts/check")
     def alerts_check():

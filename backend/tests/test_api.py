@@ -150,6 +150,26 @@ def test_alert_and_layout_endpoints(client):
     assert client.get("/api/alerts", params={"status": "paused"}).json()[0]["id"] == a["id"]
     assert client.delete(f"/api/alerts/{a['id']}").status_code == 200
     assert client.delete(f"/api/alerts/{a['id']}").status_code == 404
+
+
+def test_triggered_alerts_land_in_the_inbox(client):
+    assert client.get("/api/inbox").json() == {"items": [], "unread": 0}
+    up = client.post("/api/alerts", json={"symbol": "AAPL", "kind": "above", "value": 1, "message": "go"}).json()
+    client.post("/api/alerts", json={"symbol": "MSFT", "kind": "below", "value": 1}).json()
+    fired = client.post("/api/alerts/check").json()
+    assert [f["id"] for f in fired] == [up["id"]] and fired[0]["event_id"]
+    box = client.get("/api/inbox").json()
+    assert box["unread"] == 1
+    (e,) = box["items"]
+    assert (e["id"], e["alert_id"], e["symbol"], e["message"], e["read"]) == (fired[0]["event_id"], up["id"], "AAPL", "go", False)
+    assert e["description"] == "AAPL ≥ 1" and e["price"] > 1
+    # the entry outlives the alert, and read/unread/clear work
+    client.delete(f"/api/alerts/{up['id']}")
+    assert client.post("/api/inbox/read", json={"ids": [e["id"]]}).json() == {"unread": 0}
+    assert client.get("/api/inbox", params={"unread": True}).json()["items"] == []
+    assert client.post("/api/inbox/read", json={"read": False}).json() == {"unread": 1}
+    assert client.post("/api/inbox/clear", json={}).json() == {"unread": 0}
+    assert client.get("/api/inbox").json()["items"] == []
     lay = {"grid": "2x2", "charts": [{"symbol": "SPY", "interval": "1d"}]}
     assert client.put("/api/layouts/Quad", json={"data": lay, "summary": "4 charts"}).json()["name"] == "Quad"
     assert client.get("/api/layouts").json()[0]["summary"] == "4 charts"

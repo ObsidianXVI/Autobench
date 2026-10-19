@@ -157,6 +157,21 @@ class AlertRow(Base):
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
 
+class AlertEventRow(Base):
+    """One firing of an alert, kept for the inbox (survives the alert being edited or deleted)."""
+
+    __tablename__ = "alert_events"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    alert_id: Mapped[str] = mapped_column(String, index=True)
+    symbol: Mapped[str] = mapped_column(String)
+    description: Mapped[str] = mapped_column(Text)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    author: Mapped[str] = mapped_column(String, default="user")
+    read: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+
+
 class OrderTicketRow(Base):
     """An order request: proposed by the agent (awaiting approval) or entered by the user, and the
     broker orders it became (entry plus optional stop-loss / take-profit children)."""

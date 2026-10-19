@@ -15,6 +15,7 @@ import '../core/models.dart';
 import 'api.dart';
 import 'dom.dart';
 import 'events.dart';
+import 'inbox.dart';
 import 'kit/icons.dart';
 import 'kit/overlay.dart';
 import 'kit/state.dart';
@@ -50,6 +51,7 @@ class App {
   int _activitySeq = 0;
   bool _applyingRemoteView = false;
   bool _firstHello = true;
+  final Set<String> _toastedEvents = {}; // inbox entries already shown as a toast in this tab
   final _viewSync = Debouncer(400);
 
   App(this.mount);
@@ -71,6 +73,7 @@ class App {
     _scope.listen(store.status, (_) => _renderNav());
     _scope.listen(store.provider, (_) => _renderNav());
     _scope.listen(store.alerts, (_) => _renderNav());
+    _scope.listen(store.inboxUnread, (_) => _renderNav());
     _scope.listen(trade.status, (_) => _renderNav());
     _scope.listen(trade.pending, (_) => _renderNav());
     trade.start();
@@ -129,6 +132,7 @@ class App {
     final current = store.page.value;
     final triggered = store.alerts.value.where((a) => a.status == 'triggered').length;
     final active = store.alerts.value.where((a) => a.status == 'active').length;
+    final unread = store.inboxUnread.value;
     final st = store.status.value;
     replace(_nav, [
       h('a.brand', [h('img', null, {'src': 'favicon.svg', 'alt': '', 'width': '22', 'height': '22'}), h('span', 'Autobench')],
@@ -140,7 +144,14 @@ class App {
       ]),
       h('span.spacer'),
       _tradeNav(),
-      h('button.nav-btn', [icon('alarm', size: 17), if (triggered > 0) h('span.nav-badge', '$triggered')], {
+      h('button.nav-btn.inbox-btn', [icon('inbox', size: 17), if (unread > 0) h('span.nav-badge', unread > 99 ? '99+' : '$unread')], {
+        'type': 'button',
+        'data-tip': unread > 0 ? '$unread unread alert${unread == 1 ? '' : 's'}' : 'Inbox: alerts that fired',
+        'aria-label': 'Inbox',
+      }, {
+        'click': (e) => toggleInbox(e.currentTarget as Element),
+      }),
+      h('button.nav-btn', icon('alarm', size: 17), {
         'type': 'button',
         'data-tip': '$active active alert${active == 1 ? '' : 's'}${triggered > 0 ? ', $triggered triggered' : ''}',
         'aria-label': 'Alerts',
@@ -378,6 +389,7 @@ class App {
         // only on the first connection, and only if the agent changed the view while we were away
         if (_firstHello && d['view']['updated_by'].s == 'agent') _applyRemoteView(d['view']);
         _firstHello = false;
+        _catchUpInbox();
       case 'view.changed':
         if (d['updated_by'].s == 'agent') {
           _applyRemoteView(d);
@@ -419,13 +431,14 @@ class App {
         }
       case 'alert.triggered':
         store.loadAlerts();
+        store.loadInbox();
         _chime();
-        final sym = d['symbol'].s ?? '';
-        toast(d['message'].s ?? 'Triggered at ${d['trigger_price'].d ?? ''}', title: '⏰ ${d['description'].s}', kind: 'alert',
-            ms: 0, actionLabel: 'Open chart', onAction: () {
-          store.activeChart.symbol.value = sym;
-          store.page.value = 'chart';
-        });
+        final eventId = d['event_id'].s;
+        if (eventId != null) _toastedEvents.add(eventId);
+        alertToast(d['description'].s ?? '', symbol: d['symbol'].s ?? '', message: d['message'].s,
+            price: d['trigger_price'].d, eventId: eventId);
+      case 'inbox.updated':
+        if (d['unread'].i != store.inboxUnread.value) store.loadInbox();
       case 'ui.navigate':
         final page = d['page'].s;
         if (page == 'chart' && d['symbol'].s != null) store.activeChart.symbol.value = d['symbol'].s!;
@@ -440,6 +453,26 @@ class App {
       case 'screens.updated':
         final s = _pageObjects['screener'];
         if (s is ScreenerPage) s.reloadSaved();
+    }
+  }
+
+  /// After (re)connecting: alerts that fired while no tab was listening and are still unread get a
+  /// toast too (one per alert, or a summary when several fired).
+  Future<void> _catchUpInbox() async {
+    await store.loadInbox();
+    final missed = [for (final e in store.inbox.value) if (!e.read && _toastedEvents.add(e.id)) e];
+    if (missed.isEmpty) return;
+    if (missed.length == 1) {
+      final e = missed.single;
+      alertToast(e.description, symbol: e.symbol, message: e.message, price: e.price, eventId: e.id, ms: 15000);
+    } else {
+      final syms = {for (final e in missed) e.symbol}.toList();
+      toast('${syms.take(5).join(', ')}${syms.length > 5 ? ' and ${syms.length - 5} more' : ''}',
+          title: '⏰ ${missed.length} alerts fired while you were away', kind: 'alert', ms: 15000, actionLabel: 'Open inbox',
+          onAction: () {
+        final btn = document.querySelector('.inbox-btn');
+        if (btn != null) toggleInbox(btn);
+      });
     }
   }
 

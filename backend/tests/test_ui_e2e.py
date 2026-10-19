@@ -89,6 +89,7 @@ def _reset(server):
                                           "from_time": None, "to_time": None})
     for a in httpx.get(f"{server}/api/alerts").json():
         httpx.delete(f"{server}/api/alerts/{a['id']}")
+    httpx.post(f"{server}/api/inbox/clear", json={})
     for sym in ("SPY", "NVDA", "AMD", "AAPL", "MSFT"):
         httpx.delete(f"{server}/api/annotations", params={"symbol": sym})
     for cfg in httpx.get(f"{server}/api/chart-config").json():
@@ -325,6 +326,32 @@ def test_alert_from_context_menu_triggers_toast(page, server):
     assert "SPY" in page.inner_text(".toast.alert")
     page.click("button[aria-label='Alerts']")
     page.wait_for_selector(".alert-row.triggered")
+
+
+def test_inbox_lists_fired_alerts_and_catches_up_after_reload(page, server):
+    httpx.post(f"{server}/api/alerts", json={"symbol": "AAPL", "kind": "above", "value": 1, "message": "breakout"})
+    httpx.post(f"{server}/api/alerts/check")
+    page.wait_for_selector(".toast.alert:has-text('breakout')")
+    page.wait_for_selector(".inbox-btn .nav-badge:text-is('1')")
+    # dismissing the toast marks it read
+    page.click(".toast.alert button[aria-label='Dismiss']")
+    page.wait_for_selector(".inbox-btn .nav-badge", state="detached")
+    page.click("button[aria-label='Inbox']")
+    page.wait_for_selector(".inbox-row:not(.unread):has-text('AAPL')")
+    assert "breakout" in page.inner_text(".inbox-row")
+    page.keyboard.press("Escape")
+    # fired while the tab was closed: a toast on the next load, and unread in the inbox
+    httpx.post(f"{server}/api/alerts", json={"symbol": "MSFT", "kind": "above", "value": 1})
+    page.goto("about:blank")
+    httpx.post(f"{server}/api/alerts/check")
+    page.goto(f"{server}/#chart")
+    page.wait_for_selector(".toast.alert:has-text('MSFT')")
+    page.wait_for_selector(".inbox-btn .nav-badge:text-is('1')")
+    page.click("button[aria-label='Inbox']")
+    page.wait_for_selector(".inbox-row.unread:has-text('MSFT')")
+    page.click(".inbox-row.unread")  # opens the chart and marks it read
+    page.wait_for_selector(".inbox-btn .nav-badge", state="detached")
+    page.wait_for_function("fetch('/api/inbox').then(r => r.json()).then(b => b.unread === 0 && b.items.length === 2)")
 
 
 # ------------------------------------------------------------------------------- pages

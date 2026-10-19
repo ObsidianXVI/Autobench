@@ -1,5 +1,6 @@
 """Price and indicator alerts. The scheduler calls `check()` periodically; triggered alerts are
-published on the event bus (the UI shows them live) and kept with the trigger price and time."""
+published on the event bus (the UI shows them live as toasts) and every firing is also kept in the
+inbox (`alert_events`), so alerts that fired while no browser tab was open are still seen."""
 
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from ..db import AlertRow, session_scope, utcnow
+from ..db import AlertEventRow, AlertRow, session_scope, utcnow
 from .events import bus
 from .market import get_bars, get_quotes, normalize_symbol
 
@@ -25,6 +26,7 @@ KINDS = {
     "expression": "an indicator condition becomes true on the latest bar, e.g. crosses_above(close, sma(50))",
 }
 EXPRESSION_INTERVAL_MIN = timedelta(minutes=5)  # indicator alerts are evaluated at most this often
+INBOX_KEEP = 500  # newest inbox entries kept
 
 
 def to_dict(r: AlertRow) -> dict:
@@ -195,8 +197,71 @@ def check() -> list[dict]:
                 r.trigger_price = price
                 if not r.repeat:
                     r.status = "triggered"
-                out = to_dict(r)
+                ev = AlertEventRow(id=uuid.uuid4().hex[:12], alert_id=r.id, symbol=r.symbol, description=describe(r),
+                                   message=r.message, price=price, author=r.author, at=now)
+                s.add(ev)
+                out = {**to_dict(r), "event_id": ev.id}
                 fired.append(out)
+    if fired:
+        _prune_inbox()
     for out in fired:
         bus.publish("alert.triggered", out)
     return fired
+
+
+# ---------------------------------------------------------------- inbox
+
+
+def _event_dict(e: AlertEventRow) -> dict:
+    return {"id": e.id, "alert_id": e.alert_id, "symbol": e.symbol, "description": e.description,
+            "message": e.message, "price": e.price, "author": e.author, "read": e.read,
+            "at": e.at.isoformat() + "Z"}
+
+
+def inbox(limit: int = 100, unread_only: bool = False) -> dict:
+    """Recent alert firings, newest first, with the unread count."""
+    from sqlalchemy import func
+
+    with session_scope() as s:
+        q = select(AlertEventRow).order_by(AlertEventRow.at.desc(), AlertEventRow.id).limit(max(1, min(limit, INBOX_KEEP)))
+        if unread_only:
+            q = q.where(AlertEventRow.read.is_(False))
+        items = [_event_dict(e) for e in s.scalars(q)]
+        unread = s.scalar(select(func.count()).select_from(AlertEventRow).where(AlertEventRow.read.is_(False))) or 0
+    return {"items": items, "unread": unread}
+
+
+def mark_read(ids: list[str] | None = None, read: bool = True) -> dict:
+    """Mark the given inbox entries (all when ids is None) read or unread."""
+    from sqlalchemy import update as sql_update
+
+    with session_scope() as s:
+        q = sql_update(AlertEventRow).values(read=read)
+        if ids is not None:
+            q = q.where(AlertEventRow.id.in_(ids))
+        s.execute(q)
+    out = inbox(limit=1)
+    bus.publish("inbox.updated", {"unread": out["unread"]})
+    return {"unread": out["unread"]}
+
+
+def clear_inbox(ids: list[str] | None = None) -> dict:
+    """Delete inbox entries (all when ids is None). The alerts themselves are not touched."""
+    from sqlalchemy import delete as sql_delete
+
+    with session_scope() as s:
+        q = sql_delete(AlertEventRow)
+        if ids is not None:
+            q = q.where(AlertEventRow.id.in_(ids))
+        s.execute(q)
+    out = inbox(limit=1)
+    bus.publish("inbox.updated", {"unread": out["unread"]})
+    return {"unread": out["unread"]}
+
+
+def _prune_inbox() -> None:
+    from sqlalchemy import delete as sql_delete
+
+    with session_scope() as s:
+        keep = select(AlertEventRow.id).order_by(AlertEventRow.at.desc()).limit(INBOX_KEEP)
+        s.execute(sql_delete(AlertEventRow).where(AlertEventRow.id.not_in(keep)))

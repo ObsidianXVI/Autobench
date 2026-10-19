@@ -36,6 +36,19 @@ class AlertInfo {
       j['repeat'].b ?? false, j['author'].s ?? 'user', j['expression'].s);
 }
 
+/// One firing of an alert, as kept in the inbox.
+class InboxItem {
+  final String id, alertId, symbol, description, at, author;
+  final String? message;
+  final double? price;
+  final bool read;
+  const InboxItem(this.id, this.alertId, this.symbol, this.description, this.at, this.author, this.message, this.price,
+      this.read);
+
+  factory InboxItem.fromJson(J j) => InboxItem(j['id'].s ?? '', j['alert_id'].s ?? '', j['symbol'].s ?? '',
+      j['description'].s ?? '', j['at'].s ?? '', j['author'].s ?? 'user', j['message'].s, j['price'].d, j['read'].b ?? false);
+}
+
 class Activity {
   final int id;
   final DateTime at;
@@ -151,6 +164,8 @@ class Store {
 
   // alerts
   final alerts = Obs<List<AlertInfo>>(const []);
+  final inbox = Obs<List<InboxItem>>(const []);
+  final inboxUnread = Obs<int>(0);
 
   // workbench layout
   final grid = Obs<String>('1');
@@ -396,6 +411,39 @@ class Store {
   Future<void> loadAlerts() async {
     try {
       alerts.value = [for (final a in (await request('/api/alerts')).list) AlertInfo.fromJson(a)];
+    } catch (_) {}
+  }
+
+  Future<void> loadInbox() async {
+    try {
+      final j = await request('/api/inbox');
+      inbox.value = [for (final e in j['items'].list) InboxItem.fromJson(e)];
+      inboxUnread.value = j['unread'].i ?? 0;
+    } catch (_) {}
+  }
+
+  /// Marks inbox entries read ([ids] null = all). Updates locally first so badges react at once.
+  Future<void> markInboxRead([List<String>? ids, bool read = true]) async {
+    final hit = ids?.toSet();
+    final changed = [for (final e in inbox.value) if ((hit == null || hit.contains(e.id)) && e.read != read) e.id];
+    if (changed.isEmpty && hit != null) return;
+    inbox.value = [
+      for (final e in inbox.value)
+        hit == null || hit.contains(e.id)
+            ? InboxItem(e.id, e.alertId, e.symbol, e.description, e.at, e.author, e.message, e.price, read)
+            : e,
+    ];
+    inboxUnread.value = inbox.value.where((e) => !e.read).length;
+    try {
+      inboxUnread.value = (await request('/api/inbox/read', method: 'POST', body: {'ids': ids, 'read': read}))['unread'].i ?? 0;
+    } catch (_) {}
+  }
+
+  Future<void> clearInbox([List<String>? ids]) async {
+    final hit = ids?.toSet();
+    inbox.value = [for (final e in inbox.value) if (hit != null && !hit.contains(e.id)) e];
+    try {
+      inboxUnread.value = (await request('/api/inbox/clear', method: 'POST', body: {'ids': ids}))['unread'].i ?? 0;
     } catch (_) {}
   }
 

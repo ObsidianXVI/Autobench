@@ -410,9 +410,11 @@ HTMLElement get _toasts {
   return el;
 }
 
-/// Shows a toast. [kind]: info | success | warn | error | alert. Returns a function that closes it.
+/// Shows a toast. [kind]: info | success | warn | error | alert. [onDismiss] runs when the user
+/// closes it with ×. Returns a function that closes it.
 void Function() toast(String message,
-    {String kind = 'info', String? title, String? actionLabel, void Function()? onAction, int ms = 5000}) {
+    {String kind = 'info', String? title, String? actionLabel, void Function()? onAction, void Function()? onDismiss,
+    int ms = 5000}) {
   late HTMLElement el;
   Timer? timer;
   void close() {
@@ -432,7 +434,12 @@ void Function() toast(String message,
           close();
         },
       }),
-    h('button.icon-btn.small', icon('x', size: 14), {'aria-label': 'Dismiss', 'type': 'button'}, {'click': (_) => close()}),
+    h('button.icon-btn.small', icon('x', size: 14), {'aria-label': 'Dismiss', 'type': 'button'}, {
+      'click': (_) {
+        onDismiss?.call();
+        close();
+      },
+    }),
   ]);
   _toasts.append(el);
   while (_toasts.children.length > 5) {

@@ -106,7 +106,9 @@ part of the codebase, and its only dependency is `package:web`. For UI developme
 The market universe has about 6,000 stocks. Its first build takes about a minute (listings, SEC
 fundamentals, a year of daily bars). After that it stays fresh in the background: prices every
 minute while you use the screener, bars every 10 minutes in market hours, and fundamentals daily.
-Alerts are checked every 20 seconds.
+Alerts are checked every 20 seconds while the server runs. A fired alert pops up as a toast with a
+chime in every open tab, and is kept in the inbox (the tray button in the top bar, with an unread
+count). Alerts that fired while no tab was open show as a toast the next time you open the app.
 
 Without Alpaca keys, bars and quotes fall back to Yahoo automatically. `AUTOBENCH_BAR_PROVIDER=fake`
 runs on deterministic synthetic data, which needs no network.
