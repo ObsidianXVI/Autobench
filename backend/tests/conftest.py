@@ -29,6 +29,9 @@ def fresh_env(tmp_path, monkeypatch, request):
     else:
         monkeypatch.delenv("AUTOBENCH_BAR_PROVIDER", raising=False)
     monkeypatch.setenv("AUTOBENCH_DB_PATH", str(tmp_path / "test.db"))
+    # never read the developer's Claude Code sessions or run the real `claude`
+    monkeypatch.setenv("AUTOBENCH_CLAUDE_HOME", str(tmp_path / "claude-home"))
+    monkeypatch.setenv("AUTOBENCH_CLAUDE_BIN", str(tmp_path / "no-claude"))
     get_settings.cache_clear()
     reset_providers()
     db.init_db(f"sqlite:///{tmp_path / 'test.db'}")

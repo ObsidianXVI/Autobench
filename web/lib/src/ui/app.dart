@@ -20,6 +20,7 @@ import 'kit/icons.dart';
 import 'kit/overlay.dart';
 import 'kit/state.dart';
 import 'pages/calendar.dart';
+import 'pages/claude.dart';
 import 'pages/heatmap.dart';
 import 'pages/journal.dart';
 import 'pages/portfolio.dart';
@@ -41,6 +42,7 @@ const pages = [
   ('trading', 'Trading', 'wallet'),
   ('journal', 'Journal', 'note'),
   ('portfolio', 'Portfolio', 'pie'),
+  ('claude', 'Claude', 'bot'),
 ];
 
 class App {
@@ -232,6 +234,8 @@ class App {
         p.onShow();
       case PortfolioPage p:
         p.onShow();
+      case ClaudePage p:
+        p.onShow();
       case ChartPage p:
         for (final panel in p.panels) {
           panel.engine.invalidate();
@@ -269,6 +273,10 @@ class App {
         return p.root;
       case 'portfolio':
         final p = PortfolioPage();
+        _pageObjects[key] = p;
+        return p.root;
+      case 'claude':
+        final p = ClaudePage();
         _pageObjects[key] = p;
         return p.root;
       default:
@@ -459,6 +467,9 @@ class App {
       case 'portfolio.imported':
         final po = _pageObjects['portfolio'];
         if (po is PortfolioPage) po.onImported();
+      case 'claude.run' || 'claude.event':
+        final cp = _pageObjects['claude'];
+        if (cp is ClaudePage) cp.onEvent(e);
       case 'inbox.updated':
         if (d['unread'].i != store.inboxUnread.value) store.loadInbox();
       case 'ui.navigate':

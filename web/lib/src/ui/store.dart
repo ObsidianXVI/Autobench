@@ -111,6 +111,8 @@ const prefDefaults = <String, Object?>{
   'portfolio.period': 'all',
   'portfolio.start': '',
   'portfolio.end': '',
+  'claude.session': '',
+  'claude.mode': 'default',
   'journal.drawDays': 30,
   'calendar.universe': 'sp500',
   'calendar.minCap': 0.0,

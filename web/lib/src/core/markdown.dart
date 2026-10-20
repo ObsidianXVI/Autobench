@@ -1,5 +1,5 @@
 // Minimal, safe markdown parser for agent rationales and notes: headings, bold/italic/code,
-// lists, tables and paragraphs. Produces a small block tree that the UI renders as DOM nodes
+// lists, tables, fenced code and paragraphs. Produces a small block tree that the UI renders as DOM nodes
 // (never as HTML strings).
 
 sealed class Inline {
@@ -50,12 +50,19 @@ class Table extends Block {
   const Table(this.head, this.rows);
 }
 
+class CodeBlock extends Block {
+  final String lang;
+  final String text;
+  const CodeBlock(this.lang, this.text);
+}
+
 final _inlineRe = RegExp(r'(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)');
 final _headingRe = RegExp(r'^(#{1,4})\s+(.*)');
 final _listRe = RegExp(r'^\s*([-*]|\d+\.)\s+');
 final _orderedRe = RegExp(r'^\s*\d+\.');
 final _separatorRe = RegExp(r'^:?-{2,}:?$');
-final _blockStartRe = RegExp(r'^(#{1,4}\s|\s*\||\s*([-*]|\d+\.)\s)');
+final _blockStartRe = RegExp(r'^(#{1,4}\s|\s*\||\s*([-*]|\d+\.)\s|\s*```)');
+final _fenceRe = RegExp(r'^\s*```\s*([\w+.-]*)\s*$');
 
 List<Inline> parseInline(String text) {
   final out = <Inline>[];
@@ -91,6 +98,18 @@ List<Block> parseMarkdown(String text) {
     final line = lines[i];
     if (line.trim().isEmpty) {
       i++;
+      continue;
+    }
+    final fence = _fenceRe.firstMatch(line);
+    if (fence != null) {
+      final body = <String>[];
+      i++;
+      while (i < lines.length && !lines[i].trim().startsWith('```')) {
+        body.add(lines[i]);
+        i++;
+      }
+      i++; // closing fence (or end of text)
+      blocks.add(CodeBlock(fence.group(1)!, body.join('\n')));
       continue;
     }
     final h = _headingRe.firstMatch(line);

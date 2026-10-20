@@ -201,6 +201,27 @@ Safety:
 - **stdio-only clients** (e.g. Claude Desktop): command `backend/.venv/bin/autobench`, args `["mcp-stdio"]`.
   Drawings are relayed to a running `autobench serve`, so the chart still updates live.
 
+### Chat with Claude Code from the app (Claude page)
+
+The **Claude** page lists the Claude Code sessions on this Mac (from `~/.claude`) by name, title and
+folder, shows their recent conversation, and lets you message one. The server runs
+`claude -p --resume <id>` in the session's folder with that session's history, tools and settings, and
+the reply streams into the page (tool calls included). **New** starts a session in a folder you choose.
+
+- **Permissions**: prompts can't be answered from the page, so anything that would ask is refused,
+  and the page lists what was refused. Choose *Accept edits* to allow file edits, or *Plan only*. The
+  page never offers *bypass permissions*.
+- **A session open in a terminal** is never written to by a second process. Messages sent to it
+  from the page continue a copy (`--fork-session`), and the original is left alone.
+- **Scripting**: the same API takes a session id, an id prefix or a name, e.g.
+  `curl -H 'X-Autobench: 1' -H 'Content-Type: application/json' -d '{"text":"run the tests"}'
+  http://127.0.0.1:8000/api/claude/sessions/Autobench%20Dev/messages`. Replies arrive on `/ws`
+  as `claude.event` and `claude.run`. `GET /api/claude/sessions/{ref}/messages` returns the history.
+- Every route requires the local UI header. The WebSocket only accepts connections from this
+  machine's UI. The agent's process doesn't get this app's environment (keys, account settings).
+  `AUTOBENCH_CLAUDE_CHAT=0` turns the page off, and `AUTOBENCH_CLAUDE_BIN` points to `claude` if the
+  server can't find it.
+
 ## What the agent can do (85 MCP tools)
 
 | Area | Tools |

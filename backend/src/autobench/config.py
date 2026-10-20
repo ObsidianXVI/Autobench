@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     autobench_ibkr_flex_token: str = ""
     autobench_ibkr_flex_query: str = ""
 
+    # Claude page: chat with Claude Code sessions on this machine (runs the `claude` command)
+    autobench_claude_chat: bool = True
+    autobench_claude_bin: str = ""  # default: `claude` on PATH or ~/.local/bin/claude
+    autobench_claude_home: str = ""  # default: ~/.claude
+
     @property
     def alpaca_enabled(self) -> bool:
         return bool(self.alpaca_api_key_id and self.alpaca_api_secret_key)

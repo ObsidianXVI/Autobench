@@ -35,11 +35,26 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def _fake_claude(root: Path) -> dict:
+    """A Claude Code home with one session and a stand-in `claude` (never the developer's own)."""
+    from test_claude_code import FAKE, SID, _transcript
+
+    work = root / "work"
+    work.mkdir()
+    (root / "home" / "projects" / "-work").mkdir(parents=True)
+    (root / "home" / "projects" / "-work" / f"{SID}.jsonl").write_text(_transcript(work, SID, name="Autobench main"))
+    fake = root / "claude"
+    fake.write_text(FAKE.format(python=sys.executable, log=str(root / "calls.jsonl"), fork="x", home=str(root / "home")))
+    fake.chmod(0o755)
+    return {"AUTOBENCH_CLAUDE_HOME": str(root / "home"), "AUTOBENCH_CLAUDE_BIN": str(fake)}
+
+
 @pytest.fixture(scope="module")
 def server(tmp_path_factory):
     port = _free_port()
     env = {**os.environ, "AUTOBENCH_BAR_PROVIDER": "fake", "ALPACA_API_KEY_ID": "", "ALPACA_API_SECRET_KEY": "",
-           "AUTOBENCH_BACKGROUND": "1", "AUTOBENCH_BROKER": "sim", "AUTOBENCH_DB_PATH": str(tmp_path_factory.mktemp("ui") / "ui.db")}
+           "AUTOBENCH_BACKGROUND": "1", "AUTOBENCH_BROKER": "sim", "AUTOBENCH_DB_PATH": str(tmp_path_factory.mktemp("ui") / "ui.db"),
+           **_fake_claude(tmp_path_factory.mktemp("claude"))}
     log = open(tmp_path_factory.mktemp("ui-log") / "server.log", "w")
     proc = subprocess.Popen([sys.executable, "-m", "autobench", "serve", "--port", str(port)], env=env,
                             stdout=log, stderr=subprocess.STDOUT)
@@ -927,3 +942,24 @@ def test_portfolio_import_and_returns(page, server, tmp_path):
     # the agent opens the page and reads the same numbers
     mcp_call(server, "show_in_ui", {"page": "portfolio", "tab": "performance"})
     page.wait_for_selector(".tr-tabs .tab.on[data-tab='performance']")
+
+
+def test_claude_page_chats_with_a_session(page, server):
+    page.click("a.page-tab:has-text('Claude')")
+    page.wait_for_selector(".cc-row.on:has-text('Autobench main')")
+    assert "Chart label fixes" in page.inner_text(".cc-row.on")
+    # history from the transcript: what was typed, the reply and the tools used (with their errors)
+    page.wait_for_selector(".cc-msg.user:has-text('fix the chart labels')")
+    assert "Looking at it." in page.inner_text(".cc-msg.bot")
+    assert "File does not exist" in page.inner_text(".cc-tool.err")
+    page.select_option(".cc-mode", "acceptEdits")
+    page.fill(".cc-input", "hello from the app")
+    page.press(".cc-input", "Enter")
+    page.wait_for_selector(".cc-msg.user:has-text('hello from the app')")
+    page.wait_for_selector(".cc-msg.bot:has-text('You said: hello from the app')")
+    page.wait_for_selector(".cc-note.warn:has-text('Not allowed without asking: Bash')")
+    assert page.input_value(".cc-input") == ""
+    page.wait_for_selector(".cc-composer button:has-text('Send')")
+    # once done, the thread is the saved transcript: the new turn is there once
+    page.wait_for_function("document.querySelectorAll('.cc-msg.user').length === 2")
+    assert page.locator(".cc-msg.bot:has-text('You said: hello from the app')").count() == 1

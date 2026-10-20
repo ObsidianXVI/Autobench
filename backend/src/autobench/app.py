@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,6 +23,7 @@ from .services.broker import BrokerError
 from .schemas import AccountSelect, AnalysisIn, AnnotationIn, AnnotationPatch, BrokerConnection, ChartView, ClosePosition, NoteIn
 from .schemas import OrderModify, OrderSpec
 from .services import alerts as alerts_svc
+from .services import claude_code
 from .services import journal, portfolio
 from .services.statements import StatementError
 from .services import analyses, annotations, backtest, fundamentals, macro, market, market_context, screener
@@ -149,6 +151,19 @@ def trading_guard(request: Request) -> None:
         raise HTTPException(403, "Trading requests must come from the local UI")
     if request.headers.get("x-autobench") != "1":
         raise HTTPException(403, "Missing X-Autobench header")
+
+
+class ClaudeMessage(BaseModel):
+    text: str = Field(..., max_length=100_000)
+    mode: str | None = None
+    fork: bool = False
+
+
+class ClaudeNew(BaseModel):
+    cwd: str
+    text: str = Field(..., max_length=100_000)
+    name: str | None = None
+    mode: str | None = None
 
 
 class WatchlistPatch(BaseModel):
@@ -718,6 +733,41 @@ def create_app() -> FastAPI:
         trading.reset_local_history()
         return trading.status()
 
+    # --- Claude Code sessions on this machine. Reading transcripts is as sensitive as writing, so every
+    # route takes the local-UI guard.
+
+    @app.exception_handler(claude_code.ClaudeError)
+    async def _claude_error(_r: Request, e: claude_code.ClaudeError):
+        return JSONResponse({"detail": str(e), "code": e.code}, status_code=e.status)
+
+    @app.get("/api/claude/status", dependencies=guard)
+    def claude_status():
+        return claude_code.status()
+
+    @app.get("/api/claude/sessions", dependencies=guard)
+    def claude_sessions(q: str | None = None, limit: int = Query(100, ge=1, le=1000)):
+        return {"sessions": claude_code.sessions(q, limit)}
+
+    @app.post("/api/claude/sessions", dependencies=guard)
+    def claude_create(body: ClaudeNew):
+        return claude_code.create(body.cwd, body.text, body.name, body.mode)
+
+    @app.get("/api/claude/sessions/{ref}", dependencies=guard)
+    def claude_session(ref: str):
+        return claude_code.session(ref)
+
+    @app.get("/api/claude/sessions/{ref}/messages", dependencies=guard)
+    def claude_messages(ref: str, limit: int = Query(60, ge=1, le=500)):
+        return claude_code.messages(ref, limit)
+
+    @app.post("/api/claude/sessions/{ref}/messages", dependencies=guard)
+    def claude_send(ref: str, body: ClaudeMessage):
+        return claude_code.send(ref, body.text, body.mode, body.fork)
+
+    @app.post("/api/claude/sessions/{ref}/stop", dependencies=guard)
+    def claude_stop(ref: str):
+        return claude_code.stop(ref)
+
     @app.post("/api/events/relay")
     def relay(request: Request, msg: dict = Body(...)):
         """Re-broadcast events from a separate (stdio) MCP process. Local clients only."""
@@ -730,6 +780,13 @@ def create_app() -> FastAPI:
 
     @app.websocket("/ws")
     async def ws(socket: WebSocket):
+        # browsers let any site open a WebSocket to localhost, and the stream carries Claude chat text:
+        # only this machine's UI (or a non-browser client, which sends no Origin) may listen
+        local = _LOCAL_HOSTS | {settings.autobench_host}
+        origin = socket.headers.get("origin")
+        if (socket.url.hostname or "") not in local or (origin and (urlparse(origin).hostname or "") not in local):
+            await socket.close(code=1008)
+            return
         await socket.accept()
         q = bus.subscribe()
         try:

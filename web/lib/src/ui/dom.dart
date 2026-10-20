@@ -68,6 +68,7 @@ HTMLElement markdown(String text) {
             for (var i = 0; i < b.lines.length; i++) [if (i > 0) h('br'), inline(b.lines[i])],
           ]),
         md.ListBlock() => h(b.ordered ? 'ol' : 'ul', [for (final it in b.items) h('li', inline(it))]),
+        md.CodeBlock() => h('pre.md-code', h('code', b.text)),
         md.Table() => h('table.md-table', [
             h('thead', h('tr', [for (final c in b.head) h('th', inline(c))])),
             h('tbody', [

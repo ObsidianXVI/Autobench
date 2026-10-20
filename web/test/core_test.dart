@@ -165,6 +165,11 @@ Future<void> main() async {
     check('list items', (blocks[2] as ListBlock).items.length, 2);
     check('table rows', (blocks[3] as Table).rows.length, 1);
     check('ordered list', (parseMarkdown('1. a\n2. b').single as ListBlock).ordered, true);
+    final code = parseMarkdown('Run:\n```bash\nls -la\n# not a heading\n```\nafter');
+    check('fenced code kinds', code.map((b) => b.runtimeType).toList(), [Paragraph, CodeBlock, Paragraph]);
+    check('fenced code text', (code[1] as CodeBlock).text, 'ls -la\n# not a heading');
+    check('fenced code lang', (code[1] as CodeBlock).lang, 'bash');
+    check('unclosed fence keeps the rest', (parseMarkdown('```\na\nb').single as CodeBlock).text, 'a\nb');
   });
 
   group('treemap', () {
