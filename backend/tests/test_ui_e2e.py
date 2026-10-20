@@ -114,6 +114,7 @@ def _reset(server):
     httpx.put(f"{server}/api/trading/settings", json={"mode": "confirm"}, headers=th)
     httpx.post(f"{server}/api/trading/account", json={"account": "SIM-PAPER"}, headers=th)
     httpx.post(f"{server}/api/trading/sim/reset", params={"cash": 100000}, headers=th)
+    httpx.put(f"{server}/api/claude/agent", json={"session": None}, headers=th)
     for imp in httpx.get(f"{server}/api/portfolio/imports").json()["imports"]:
         httpx.delete(f"{server}/api/portfolio/imports/{imp['id']}", headers=th)
 
@@ -952,14 +953,45 @@ def test_claude_page_chats_with_a_session(page, server):
     page.wait_for_selector(".cc-msg.user:has-text('fix the chart labels')")
     assert "Looking at it." in page.inner_text(".cc-msg.bot")
     assert "File does not exist" in page.inner_text(".cc-tool.err")
-    page.select_option(".cc-mode", "acceptEdits")
     page.fill(".cc-input", "hello from the app")
     page.press(".cc-input", "Enter")
     page.wait_for_selector(".cc-msg.user:has-text('hello from the app')")
     page.wait_for_selector(".cc-msg.bot:has-text('You said: hello from the app')")
-    page.wait_for_selector(".cc-note.warn:has-text('Not allowed without asking: Bash')")
     assert page.input_value(".cc-input") == ""
     page.wait_for_selector(".cc-composer button:has-text('Send')")
     # once done, the thread is the saved transcript: the new turn is there once
     page.wait_for_function("document.querySelectorAll('.cc-msg.user').length === 2")
     assert page.locator(".cc-msg.bot:has-text('You said: hello from the app')").count() == 1
+
+
+def test_quick_chat_from_any_page_sends_the_view(page, server):
+    from test_claude_code import SID
+
+    # no agent session yet: the panel offers the recent sessions
+    page.keyboard.press(f"{MOD}+k")
+    page.wait_for_selector(".qc:not([hidden]) .qc-pick")
+    page.click(".qc-pick .cc-row:has-text('Autobench main')")
+    page.wait_for_selector(".qc-title:has-text('Autobench main')")
+    assert httpx.get(f"{server}/api/claude/status", headers={"X-Autobench": "1"}).json()["agent"] == SID
+    assert "Chart · SPY · 1d" in page.inner_text(".qc .cc-share")
+    page.fill(".qc .cc-input", "what is this chart doing?")
+    page.press(".qc .cc-input", "Enter")
+    page.wait_for_selector(".qc .cc-msg.bot:has-text('what is this chart doing?')")
+    page.wait_for_selector(".qc .cc-composer button:has-text('Send')")
+    # the message carried the chart; the transcript keeps it apart from the text
+    msgs = httpx.get(f"{server}/api/claude/sessions/{SID}/messages", headers={"X-Autobench": "1"}).json()["messages"]
+    sent = [m for m in msgs if m["role"] == "user"][-1]
+    assert sent["text"] == "what is this chart doing?"
+    assert sent["view"]["page"] == "chart" and sent["view"]["symbol"] == "SPY" and sent["view"]["interval"] == "1d"
+    assert sent["view"]["visible"]["from"] < sent["view"]["visible"]["to"]
+    page.wait_for_selector(".qc .cc-view-chip:has-text('Chart · SPY · 1d')")
+    # Esc puts it away; the page behind keeps working, and the shortcut brings it back on another page
+    page.keyboard.press("Escape")
+    page.wait_for_selector(".qc[hidden]", state="attached")
+    page.click("a.page-tab:has-text('Screener')")
+    page.wait_for_selector(".scr-results table tbody tr")
+    page.keyboard.press(f"{MOD}+k")
+    page.wait_for_selector(".qc:not([hidden]) .cc-share:has-text('Screener ·')")
+    assert "results" in page.inner_text(".qc .cc-share")
+    page.click(".qc button[aria-label='Close quick chat']")
+    page.wait_for_selector(".qc[hidden]", state="attached")

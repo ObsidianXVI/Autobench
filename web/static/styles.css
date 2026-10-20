@@ -1015,6 +1015,28 @@ details.cc-tools > summary { cursor: pointer; padding: 2px 0; }
 .cc-input { resize: vertical; min-height: 64px; max-height: 40vh; font: inherit; }
 .cc-composer-bar { display: flex; align-items: center; gap: 10px; }
 .cc-mode { width: auto; }
+.cc-head-row { display: flex; align-items: flex-start; gap: 12px; }
+.cc-head-main { flex: 1; min-width: 0; }
+.cc-agent-on { border-color: var(--agent); color: var(--agent); }
+.cc-user { align-self: flex-end; display: grid; justify-items: end; gap: 4px; max-width: min(720px, 85%); }
+.cc-user .cc-msg.user { max-width: 100%; }
+.cc-view-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-muted);
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; }
+.cc-share { display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); min-width: 0; }
+.cc-share b { color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* quick chat (⌘K): a panel over the right side of any page; the page stays usable */
+.qc { position: fixed; z-index: 105; top: 54px; right: 12px; bottom: 12px; width: min(460px, calc(100vw - 24px));
+  display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--border-strong);
+  border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+.qc[hidden] { display: none; }
+.qc-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 14px; border-bottom: 1px solid var(--border); color: var(--agent); }
+.qc-title { color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qc .cc-thread { padding: 12px 14px; gap: 10px; }
+.qc .cc-msg.bot { font-size: 12.5px; }
+.qc .cc-composer { padding: 8px 12px 10px; }
+.qc .cc-input { min-height: 48px; }
+.qc-pick { display: grid; gap: 4px; }
+.qc-pick > div:first-child { margin-bottom: 6px; }
 .cc-new { display: grid; gap: 12px; }
 .cc-new textarea { resize: vertical; font: inherit; }
 @media (max-width: 860px) {

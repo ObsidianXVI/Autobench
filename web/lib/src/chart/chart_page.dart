@@ -121,6 +121,47 @@ class ChartPage {
   }
 
   ChartPanel? get activePanel => panels.isEmpty ? null : panels[store.active.value.clamp(0, panels.length - 1)];
+
+  /// What the active chart shows, for the quick chat with Claude.
+  Map<String, Object?> agentContext() {
+    final p = activePanel;
+    if (p == null) return {'symbol': store.activeChart.symbol.value, 'interval': store.activeChart.interval.value};
+    final bars = p.bars;
+    final intraday = !const {'1d', '1wk', '1mo'}.contains(p.interval);
+    String at(int t) => DateTime.fromMillisecondsSinceEpoch(t * 1000, isUtc: true).toIso8601String().substring(0, intraday ? 16 : 10);
+    Map<String, Object?>? visible;
+    if (bars.isNotEmpty) {
+      final (a, b) = p.engine.visibleRange;
+      final i0 = a.floor().clamp(0, bars.length - 1), i1 = b.ceil().clamp(0, bars.length - 1);
+      final shown = bars.sublist(i0, i1 + 1);
+      visible = {
+        'from': at(bars[i0].time),
+        'to': at(bars[i1].time),
+        'high': shown.map((x) => x.high).reduce((x, y) => x > y ? x : y),
+        'low': shown.map((x) => x.low).reduce((x, y) => x < y ? x : y),
+      };
+    }
+    final sel = store.selected.value;
+    final drawings = p.layer.annotations.where((a) => a.visible).toList();
+    final selected = drawings.where((a) => a.id == sel).firstOrNull;
+    return {
+      'symbol': p.symbol,
+      'interval': p.interval,
+      if (bars.isNotEmpty) 'last': {'time': at(bars.last.time), 'close': bars.last.close},
+      'visible': ?visible,
+      'indicators': [
+        for (final (_, r) in p.cfg?.indicatorItemsAt(p.interval) ?? const <(LayerItem, IndicatorRef)>[])
+          {'name': r.name, if (r.params.isNotEmpty) 'params': r.params},
+      ],
+      'drawings': drawings.length,
+      if (selected != null)
+        'selected_drawing': {'id': selected.id, 'type': selected.type, 'text': ?selected.text, 'author': selected.author},
+      if (panels.length > 1)
+        'other_charts': [for (final o in panels) if (o != p) '${o.symbol} ${o.interval}'],
+      'layout': ?store.layoutName.value,
+      'side_panel': ?store.panel.value,
+    };
+  }
   ChartState get chart => store.activeChart;
 
   bool get visible => store.page.value == 'chart';
@@ -623,6 +664,7 @@ class ChartPage {
 
 void showShortcuts() {
   const rows = [
+    ('⌘K / Ctrl+K', 'Quick chat with Claude (any page)'),
     ('Type a letter', 'Symbol search'),
     ('Type a number', 'Change interval (5, 15, 60, D, W)'),
     ('/', 'Indicators'),

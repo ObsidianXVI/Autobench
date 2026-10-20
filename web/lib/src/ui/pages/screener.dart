@@ -125,6 +125,24 @@ class ScreenerPage {
     _run();
   }
 
+  /// The screen and the results on screen, for the quick chat with Claude.
+  Map<String, Object?> agentContext() {
+    final res = _res;
+    final cols = res == null ? const <String>[] : [for (final c in res['columns'].list) c.s ?? ''];
+    return {
+      'screen': {
+        for (final k in ['universe', 'filters', 'expression', 'signal', 'search', 'sort'])
+          if (_st[k] != null && _st[k] != '' && !(_st[k] is List && (_st[k] as List).isEmpty)) k: _st[k],
+      },
+      if (res != null) 'total': res['total'].i,
+      'results_page': _page + 1,
+      if (res != null)
+        'rows': [
+          for (final r in res['rows'].list.take(30)) {for (final c in ['symbol', ...cols.where((c) => c != 'symbol')]) c: r[c].v},
+        ],
+    };
+  }
+
   void onShow() {
     // the agent (or the watchlist) may have changed the screen while the page was hidden
     if (_fields.isNotEmpty) {

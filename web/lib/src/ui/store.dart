@@ -112,7 +112,7 @@ const prefDefaults = <String, Object?>{
   'portfolio.start': '',
   'portfolio.end': '',
   'claude.session': '',
-  'claude.mode': 'default',
+  'claude.shareView': true,
   'journal.drawDays': 30,
   'calendar.universe': 'sp500',
   'calendar.minCap': 0.0,

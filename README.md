@@ -201,26 +201,39 @@ Safety:
 - **stdio-only clients** (e.g. Claude Desktop): command `backend/.venv/bin/autobench`, args `["mcp-stdio"]`.
   Drawings are relayed to a running `autobench serve`, so the chart still updates live.
 
-### Chat with Claude Code from the app (Claude page)
+### Chat with Claude Code from the app (Claude page, ⌘K)
 
 The **Claude** page lists the Claude Code sessions on this Mac (from `~/.claude`) by name, title and
 folder, shows their recent conversation, and lets you message one. The server runs
-`claude -p --resume <id>` in the session's folder with that session's history, tools and settings, and
-the reply streams into the page (tool calls included). **New** starts a session in a folder you choose.
+`claude -p --resume <id> --dangerously-skip-permissions` in the session's folder, with that session's
+history, tools and settings. The reply streams into the page, tool calls included. **New** starts a
+session in a folder you choose.
 
-- **Permissions**: prompts can't be answered from the page, so anything that would ask is refused,
-  and the page lists what was refused. Choose *Accept edits* to allow file edits, or *Plan only*. The
-  page never offers *bypass permissions*.
+- **Agent session + quick chat**: choose *Use as agent* on a session. Then press **⌘K** (Ctrl+K),
+  or click the bot button in the top bar, on any page. A panel opens beside your work, and Esc puts
+  it away. A reply keeps streaming while it is closed.
+- **Your view goes with the message**, so "this" means what's on screen. On the chart that's the
+  symbol, interval, visible range, indicators and the selected drawing. On the screener, the screen
+  and its results. On the portfolio page, the account, tab and period. On the heatmap, trading,
+  journal, calendar and markets pages, their current settings. Untick *Share my view* to send text
+  only. Messages that carried a view show a small chip in the thread.
+- **Subscription, not API keys**: `ANTHROPIC_API_KEY` and other API-key or provider variables are
+  removed from the process. A message is refused unless `claude auth status` reports a claude.ai
+  login (run `claude` and `/login` if it doesn't).
+- **No permission checks.** Claude can run any command and edit any file the session's folder
+  allows, without asking. That includes calling this app's own API. The "agent has no tools to
+  approve orders or arm live trading" guarantee above therefore covers MCP tools only, not a Claude
+  session run from here.
 - **A session open in a terminal** is never written to by a second process. Messages sent to it
-  from the page continue a copy (`--fork-session`), and the original is left alone.
-- **Scripting**: the same API takes a session id, an id prefix or a name, e.g.
-  `curl -H 'X-Autobench: 1' -H 'Content-Type: application/json' -d '{"text":"run the tests"}'
-  http://127.0.0.1:8000/api/claude/sessions/Autobench%20Dev/messages`. Replies arrive on `/ws`
-  as `claude.event` and `claude.run`. `GET /api/claude/sessions/{ref}/messages` returns the history.
+  continue a copy (`--fork-session`), and a copy of the agent session becomes the agent session.
+- **Scripting**: `POST /api/claude/agent/messages` with `{"text": ..., "view": {...}}`, or
+  `POST /api/claude/sessions/{id, id prefix or name}/messages`, with the header `X-Autobench: 1`.
+  Replies arrive on `/ws` as `claude.event` and `claude.run`.
+  `GET /api/claude/sessions/{ref}/messages` returns the history.
 - Every route requires the local UI header. The WebSocket only accepts connections from this
   machine's UI. The agent's process doesn't get this app's environment (keys, account settings).
-  `AUTOBENCH_CLAUDE_CHAT=0` turns the page off, and `AUTOBENCH_CLAUDE_BIN` points to `claude` if the
-  server can't find it.
+  `AUTOBENCH_CLAUDE_CHAT=0` turns the feature off, and `AUTOBENCH_CLAUDE_BIN` points to `claude`
+  if the server can't find it.
 
 ## What the agent can do (85 MCP tools)
 

@@ -22,8 +22,11 @@ args = sys.argv[1:]
 text = sys.stdin.read()
 open({log!r}, "a").write(json.dumps({{"args": args, "text": text}}) + "\n")
 def out(m): print(json.dumps(m), flush=True)
-if "--version" in args:
-    print("9.9.9 (Claude Code)"); sys.exit(0)
+if args[:2] == ["auth", "status"]:
+    import os
+    method = os.environ.get("FAKE_CLAUDE_AUTH", "claude.ai")
+    print(json.dumps({{"loggedIn": method != "none", "authMethod": method, "subscriptionType": "pro", "email": "x@y"}}))
+    sys.exit(0)
 sid = args[args.index("--resume") + 1] if "--resume" in args else args[args.index("--session-id") + 1]
 if "--fork-session" in args: sid = {fork!r}
 out({{"type": "system", "subtype": "init", "session_id": sid, "cwd": "."}})
@@ -88,6 +91,7 @@ def claude(tmp_path, monkeypatch):
 
     get_settings.cache_clear()
     claude_code._cache.clear()
+    claude_code._auth = None
     return {"home": home, "work": work, "log": log}
 
 
@@ -150,15 +154,14 @@ def test_history_keeps_what_people_typed_and_the_tools_used(claude, client):
 
 def test_sending_resumes_the_session_and_streams_the_reply(claude, client):
     bus.history.clear()
-    run = client.post(f"/api/claude/sessions/{SID}/messages", json={"text": "hello there", "mode": "acceptEdits"},
-                      headers=H).json()
+    run = client.post(f"/api/claude/sessions/{SID}/messages", json={"text": "hello there"}, headers=H).json()
     assert run["state"] == "running" and run["session_id"] == SID
     assert _wait(lambda: any(m["type"] == "claude.run" and m["data"]["state"] == "done" for m in bus.history))
     call = _calls(claude)[-1]
     assert call["text"] == "hello there", "the prompt goes on stdin, not the command line"
     a = call["args"]
     assert a[:3] == ["-p", "--resume", SID] and "hello there" not in a
-    assert a[a.index("--permission-prompts") + 1] == "none" and a[a.index("--permission-mode") + 1] == "acceptEdits"
+    assert "--dangerously-skip-permissions" in a and "--permission-mode" not in a
     events = [m["data"] for m in bus.history if m["type"] == "claude.event"]
     assert [e["kind"] for e in events] == ["tool", "tool_error", "text"]
     assert events[0]["summary"] == "rm -rf build" and events[2]["text"] == "You said: hello there"
@@ -166,20 +169,31 @@ def test_sending_resumes_the_session_and_streams_the_reply(claude, client):
     assert done["result"]["denied"] == ["Bash"] and done["result"]["cost_usd"] == 0.01
 
 
-def test_the_agent_does_not_get_this_apps_environment(claude, client, tmp_path):
+def test_the_agent_does_not_get_this_apps_environment(claude, client, tmp_path, monkeypatch):
     env_dump = tmp_path / "env.json"
     fake = tmp_path / "claude"
     fake.write_text(fake.read_text().replace("args = sys.argv[1:]",
                                             f"import os; open({str(env_dump)!r}, 'w').write(json.dumps(dict(os.environ)))\nargs = sys.argv[1:]"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-not-used")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://proxy.example")
     claude_code.send(SID, "hi")
     assert _wait(lambda: not claude_code.runs.active())
     env = json.loads(env_dump.read_text())
-    assert not [k for k in env if k.startswith(("AUTOBENCH_", "ALPACA_"))]
+    assert not [k for k in env if k.startswith(("AUTOBENCH_", "ALPACA_", "ANTHROPIC_"))]
 
 
-def test_rejects_unsafe_modes_and_a_second_message_while_busy(claude, client):
-    r = client.post(f"/api/claude/sessions/{SID}/messages", json={"text": "x", "mode": "bypassPermissions"}, headers=H)
-    assert r.status_code == 400
+@pytest.mark.parametrize("method", ["none", "api_key"])
+def test_only_runs_on_the_claude_ai_login(claude, client, monkeypatch, method):
+    monkeypatch.setenv("FAKE_CLAUDE_AUTH", method)
+    st = client.get("/api/claude/status", headers=H).json()
+    assert st["auth"] == {"logged_in": method != "none", "method": method, "subscription": "pro", "ok": False}
+    assert "email" not in json.dumps(st)
+    r = client.post(f"/api/claude/sessions/{SID}/messages", json={"text": "hi"}, headers=H)
+    assert r.status_code == 403 and r.json()["code"] == "auth"
+    assert not [c for c in _calls(claude) if "-p" in c["args"]]
+
+
+def test_rejects_a_second_message_while_busy(claude, client):
     claude_code.send(SID, "SLOW please")
     try:
         r = client.post(f"/api/claude/sessions/{SID}/messages", json={"text": "again"}, headers=H)
@@ -208,7 +222,8 @@ def test_new_session_in_a_folder_and_failures_are_reported(claude, client):
     bus.history.clear()
     run = client.post("/api/claude/sessions", json={"cwd": str(claude["work"]), "text": "FAIL now", "name": "Probe"},
                       headers=H).json()
-    a = _calls(claude)[-1]["args"] if _wait(lambda: _calls(claude)) else []
+    runs = lambda: [c["args"] for c in _calls(claude) if "-p" in c["args"]]  # noqa: E731
+    a = runs()[-1] if _wait(runs) else []
     assert "--session-id" in a and a[a.index("--name") + 1] == "Probe"
     assert _wait(lambda: any(m["type"] == "claude.run" and m["data"]["state"] == "error" for m in bus.history))
     err = next(m["data"] for m in bus.history if m["type"] == "claude.run" and m["data"]["state"] == "error")
@@ -233,3 +248,36 @@ def test_websocket_refuses_other_sites(client):
             ws.receive_json()
     with client.websocket_connect("/ws", headers={"origin": "http://127.0.0.1:8000"}) as ws:
         assert ws.receive_json()["type"] == "hello"
+
+
+def test_the_view_goes_with_the_message_and_is_shown_apart_in_history(claude, client):
+    view = {"page": "chart", "symbol": "NVDA", "interval": "1d"}
+    client.post(f"/api/claude/sessions/{SID}/messages", json={"text": "what do you see?", "view": view}, headers=H)
+    assert _wait(lambda: not claude_code.runs.active())
+    prompt = _calls(claude)[-1]["text"]
+    assert prompt.startswith("<autobench-view>\n") and prompt.endswith("\n\nwhat do you see?")
+    assert json.dumps(view, separators=(",", ":")) in prompt
+    last = client.get(f"/api/claude/sessions/{SID}/messages", headers=H).json()["messages"][-2]
+    assert last == {"role": "user", "text": "what do you see?", "view": view, "at": None}
+    # long result lists are cut to fit
+    big = {"page": "screener", "rows": [{"symbol": f"S{i}", "name": "x" * 200} for i in range(500)]}
+    assert len(claude_code.with_view("hi", big)) < 13_000
+
+
+def test_agent_session_is_chosen_and_quick_chat_goes_to_it(claude, client):
+    r = client.post("/api/claude/agent/messages", json={"text": "hi"}, headers=H)
+    assert r.status_code == 409 and r.json()["code"] == "no_agent"
+    assert client.put("/api/claude/agent", json={"session": "Autobench main"}, headers=H).json() == {"session_id": SID}
+    st = client.get("/api/claude/status", headers=H).json()
+    assert st["agent"] == SID
+    assert [s["id"] for s in client.get("/api/claude/sessions", headers=H).json()["sessions"] if s["agent"]] == [SID]
+    run = client.post("/api/claude/agent/messages", json={"text": "hi", "view": {"page": "heatmap"}}, headers=H).json()
+    assert run["session_id"] == SID
+    assert _wait(lambda: not claude_code.runs.active())
+    # open in a terminal: the quick chat continues a copy, which then becomes the agent session
+    (claude["home"] / "sessions" / "1.json").write_text(json.dumps({"pid": os.getpid(), "sessionId": SID}))
+    client.post("/api/claude/agent/messages", json={"text": "again"}, headers=H)
+    assert _wait(lambda: not claude_code.runs.active())
+    assert "--fork-session" in _calls(claude)[-1]["args"]
+    assert client.get("/api/claude/status", headers=H).json()["agent"] == FORK
+    assert client.put("/api/claude/agent", json={"session": None}, headers=H).json() == {"session_id": None}

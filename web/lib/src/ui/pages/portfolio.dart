@@ -67,6 +67,15 @@ class PortfolioPage {
     });
   }
 
+  /// The account and period on screen, for the quick chat with Claude.
+  Map<String, Object?> agentContext() => {
+        'account': ?_account,
+        'tab': _tab,
+        'period': _period,
+        if (_start.isNotEmpty) 'start': _start,
+        if (_end.isNotEmpty) 'end': _end,
+      };
+
   void onShow() {
     trade.start();
     _renderHead();

@@ -155,7 +155,7 @@ def trading_guard(request: Request) -> None:
 
 class ClaudeMessage(BaseModel):
     text: str = Field(..., max_length=100_000)
-    mode: str | None = None
+    view: dict[str, Any] | None = None  # what the user has open in the app
     fork: bool = False
 
 
@@ -163,7 +163,12 @@ class ClaudeNew(BaseModel):
     cwd: str
     text: str = Field(..., max_length=100_000)
     name: str | None = None
-    mode: str | None = None
+    view: dict[str, Any] | None = None
+    agent: bool = False
+
+
+class ClaudeAgent(BaseModel):
+    session: str | None = None
 
 
 class WatchlistPatch(BaseModel):
@@ -750,7 +755,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/claude/sessions", dependencies=guard)
     def claude_create(body: ClaudeNew):
-        return claude_code.create(body.cwd, body.text, body.name, body.mode)
+        return claude_code.create(body.cwd, body.text, body.name, body.view, body.agent)
 
     @app.get("/api/claude/sessions/{ref}", dependencies=guard)
     def claude_session(ref: str):
@@ -762,7 +767,15 @@ def create_app() -> FastAPI:
 
     @app.post("/api/claude/sessions/{ref}/messages", dependencies=guard)
     def claude_send(ref: str, body: ClaudeMessage):
-        return claude_code.send(ref, body.text, body.mode, body.fork)
+        return claude_code.send(ref, body.text, body.view, body.fork)
+
+    @app.put("/api/claude/agent", dependencies=guard)
+    def claude_agent_set(body: ClaudeAgent):
+        return claude_code.set_agent_session(body.session)
+
+    @app.post("/api/claude/agent/messages", dependencies=guard)
+    def claude_agent_send(body: ClaudeMessage):
+        return claude_code.send_agent(body.text, body.view)
 
     @app.post("/api/claude/sessions/{ref}/stop", dependencies=guard)
     def claude_stop(ref: str):

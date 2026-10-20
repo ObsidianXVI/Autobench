@@ -21,6 +21,7 @@ import 'kit/overlay.dart';
 import 'kit/state.dart';
 import 'pages/calendar.dart';
 import 'pages/claude.dart';
+import 'quick_chat.dart';
 import 'pages/heatmap.dart';
 import 'pages/journal.dart';
 import 'pages/portfolio.dart';
@@ -51,6 +52,7 @@ class App {
   final HTMLElement _pages = h('main.app-pages');
   late final Dock dock;
   late final ChartPage chartPage;
+  late final QuickChat quickChat;
   final Map<String, HTMLElement> _pageRoots = {};
   final Map<String, Object> _pageObjects = {};
   final Scope _scope = Scope();
@@ -123,8 +125,37 @@ class App {
       store.provider.value = '${hj['bar_provider'].s ?? '?'}${hj['feed'].s != null ? '/${hj['feed'].s}' : ''}';
     }, onError: (Object _) => store.provider.value = 'offline');
     store.loadAlerts();
+    quickChat = QuickChat(_viewContext);
+    // ⌘K / Ctrl+K: quick chat with Claude from any page (also while typing in a field)
+    document.addEventListener('keydown', ((KeyboardEvent e) {
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() == 'k') {
+        e.preventDefault();
+        e.stopPropagation();
+        quickChat.toggle();
+      }
+    }).toJS, true.toJS);
     EventStream(onEvent: _onEvent, onStatus: (s) => store.status.value = s);
     _renderNav();
+  }
+
+  /// What the user has open, sent with quick-chat messages so Claude knows what "this" refers to.
+  Map<String, Object?> _viewContext() {
+    final page = store.page.value;
+    String p(String key) => store.pref<Object?>(key)?.toString() ?? '';
+    final detail = switch (_pageObjects[page]) {
+      ChartPage c => c.agentContext(),
+      ScreenerPage s => s.agentContext(),
+      PortfolioPage pf => pf.agentContext(),
+      _ => switch (page) {
+          'heatmap' => {...store.heatmapState.value},
+          'trading' => {'account': ?trade.status.value?.account, 'tab': p('trading.tab')},
+          'journal' => {'tab': p('journal.tab'), 'days': store.pref<Object?>('journal.days')},
+          'calendar' => {'tab': p('calendar.tab'), 'universe': p('calendar.universe')},
+          'markets' => {'sector_period': p('markets.sectorPeriod'), 'board': p('markets.boardGroup')},
+          _ => <String, Object?>{},
+        },
+    };
+    return {...detail, 'page': page};
   }
 
   String? _pageFromHash() {
@@ -150,6 +181,13 @@ class App {
       ]),
       h('span.spacer'),
       _tradeNav(),
+      h('button.nav-btn', icon('bot', size: 17), {
+        'type': 'button',
+        'data-tip': 'Ask Claude about what is on screen (⌘K)',
+        'aria-label': 'Quick chat with Claude',
+      }, {
+        'click': (_) => quickChat.toggle(),
+      }),
       h('button.nav-btn.inbox-btn', [icon('inbox', size: 17), if (unread > 0) h('span.nav-badge', unread > 99 ? '99+' : '$unread')], {
         'type': 'button',
         'data-tip': unread > 0 ? '$unread unread alert${unread == 1 ? '' : 's'}' : 'Inbox: alerts that fired',
@@ -467,9 +505,10 @@ class App {
       case 'portfolio.imported':
         final po = _pageObjects['portfolio'];
         if (po is PortfolioPage) po.onImported();
-      case 'claude.run' || 'claude.event':
+      case 'claude.run' || 'claude.event' || 'claude.agent':
         final cp = _pageObjects['claude'];
         if (cp is ClaudePage) cp.onEvent(e);
+        quickChat.onEvent(e);
       case 'inbox.updated':
         if (d['unread'].i != store.inboxUnread.value) store.loadInbox();
       case 'ui.navigate':
