@@ -129,6 +129,11 @@ def import_statement(text: str, filename: str | None = None, source: str = "uplo
                 r.import_id = iid
                 counts["nav_updated"] += 1
             s.flush()
+        # a statement lists every open position on its date: what it leaves out was closed, so replace
+        # that date's snapshot instead of merging into it
+        for acct, day in {(p["account"], p["date"]) for p in st["positions"] if p["date"]}:
+            s.execute(delete(db.PositionSnapshotRow).where(db.PositionSnapshotRow.account == acct,
+                                                           db.PositionSnapshotRow.date == day))
         for p in st["positions"]:
             if not p["date"] or not p["symbol"]:
                 continue

@@ -373,13 +373,19 @@ class IbkrBroker(Broker):
         self._require()
 
         def read():
-            items = [p for p in self.ib.portfolio(self._account or "") if p.position and p.contract.secType == "STK"]
-            if items:
-                return [map_position(p) for p in items]
+            # the positions list is complete once loaded; the portfolio stream (prices, P&L) can lag behind it
+            # or stay empty on logins with several accounts, so per-position P&L fills the gaps
+            items = {p.contract.conId: p for p in self.ib.portfolio(self._account or "")
+                     if p.position and p.contract.secType == "STK"}
+            held = [p for p in self.ib.positions(self._account or "") if p.position and p.contract.secType == "STK"]
+            if not held:
+                return [map_position(p) for p in items.values()]
             self._watch_positions()
             out = []
-            for p in self.ib.positions(self._account or ""):
-                if not p.position or p.contract.secType != "STK":
+            for p in held:
+                item = items.get(p.contract.conId)
+                if item is not None:
+                    out.append(map_position(item))
                     continue
                 pnl = self._pnl_singles.get(p.contract.conId)
                 value = _num(pnl.value) if pnl is not None else None

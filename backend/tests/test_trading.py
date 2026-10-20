@@ -391,9 +391,12 @@ def test_ibkr_adapter_against_a_fake_ib_client():
             return [PnL(account="DU9", dailyPnL=-12.5)]
 
         def portfolio(self, account=""):
-            return [PortfolioItem(contract=SimpleNamespace(symbol="AAPL", secType="STK"),
+            return [PortfolioItem(contract=SimpleNamespace(symbol="AAPL", secType="STK", conId=265598),
                                   position=10, marketPrice=101, marketValue=1010, averageCost=100, unrealizedPNL=10,
                                   realizedPNL=0, account="DU9")]
+
+        def positions(self, account=""):
+            return []
 
         def disconnect(self):
             pass
@@ -527,7 +530,8 @@ def test_ibkr_account_selection_against_a_fake_ib_client():
         def portfolio(self, account=""):
             if self.no_portfolio:  # some multi-account logins never stream portfolio items
                 return []
-            return [PortfolioItem(contract=SimpleNamespace(symbol="MSFT" if account == "DU2" else "AAPL", secType="STK"),
+            sym, con = ("BRK B", 12) if account == "DU2" else ("AAPL", 11)
+            return [PortfolioItem(contract=SimpleNamespace(symbol=sym, secType="STK", conId=con),
                                   position=1, marketPrice=1, marketValue=1, averageCost=1, unrealizedPNL=0, realizedPNL=0,
                                   account=account)]
 
@@ -536,13 +540,14 @@ def test_ibkr_account_selection_against_a_fake_ib_client():
 
         def positions(self, account=""):
             ps = [Position("DU1", SimpleNamespace(symbol="AAPL", secType="STK", conId=11), 3, 100.0),
+                  Position("DU1", SimpleNamespace(symbol="MSFT", secType="STK", conId=13), 1, 500.0),
                   Position("DU2", SimpleNamespace(symbol="BRK B", secType="STK", conId=12), 2, 400.0)]
             return [p for p in ps if not account or p.account == account]
 
         def reqPnLSingle(self, account, model, con_id):
             self.single_subs.append((account, con_id))
-            return PnLSingle(account=account, conId=con_id, value=330.0 if con_id == 11 else 820.0,
-                             unrealizedPnL=30.0 if con_id == 11 else 20.0, realizedPnL=0.0)
+            value, unrl = {11: (330.0, 30.0), 12: (820.0, 20.0), 13: (510.0, 10.0)}[con_id]
+            return PnLSingle(account=account, conId=con_id, value=value, unrealizedPnL=unrl, realizedPnL=0.0)
 
         def cancelPnLSingle(self, account, model, con_id):
             self.single_subs.remove((account, con_id))
@@ -560,14 +565,16 @@ def test_ibkr_account_selection_against_a_fake_ib_client():
         assert st["account"] == "DU2" and st["accounts"] == [{"id": "DU1", "paper": True}, {"id": "DU2", "paper": True}]
         assert fake.subscribed == ["DU2"] and fake.pnl_subs == ["DU2"]
         assert [o["id"] for o in b.orders()] == ["2"] and [f["exec_id"] for f in b.fills()] == ["EDU2"]
-        assert b.account()["net_liquidation"] == 2000 and b.positions()[0]["symbol"] == "MSFT"
+        assert b.account()["net_liquidation"] == 2000 and [p["symbol"] for p in b.positions()] == ["BRK.B"]
         b.select_account("DU1")
         assert fake.subscribed == ["DU2", "DU1"] and fake.pnl_subs == ["DU1"]
         assert [o["id"] for o in b.orders()] == ["1"] and b.account()["net_liquidation"] == 1000
+        # a partly loaded portfolio stream: every held position is listed, the missing one from its P&L
+        assert [(p["symbol"], p["market_value"]) for p in b.positions()] == [("AAPL", 1), ("MSFT", 510.0)]
         # no portfolio stream: positions come from the positions list plus per-position P&L
         fake.no_portfolio = True
-        assert b.positions() == [{"symbol": "AAPL", "qty": 3.0, "avg_cost": 100.0, "market_price": 110.0,
-                                  "market_value": 330.0, "unrealized_pnl": 30.0, "realized_pnl": 0.0}]
+        assert b.positions()[0] == {"symbol": "AAPL", "qty": 3.0, "avg_cost": 100.0, "market_price": 110.0,
+                                    "market_value": 330.0, "unrealized_pnl": 30.0, "realized_pnl": 0.0}
         b.select_account("DU2")
         assert fake.single_subs == [("DU2", 12)] and b.positions()[0]["symbol"] == "BRK.B"
         b.select_account("DU1")

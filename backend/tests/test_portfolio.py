@@ -2,6 +2,7 @@
 import, and performance that keeps growth, contributions and returns apart."""
 
 import json
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -284,4 +285,15 @@ def test_flows_are_dated_by_when_the_account_value_includes_them():
     assert r["counts"].get("cash", 0) == 0 and r["counts"]["cash_known"] > 0
     assert [f["date"] for f in portfolio.cash_flows("U1234567", kind="deposit")] == ["2024-01-04", "2024-01-02"]
     assert portfolio.performance("U1234567", "all")["summary"]["twr_pct"] == 2.9
+
+
+def test_a_newer_statement_for_the_same_day_drops_closed_positions():
+    portfolio.import_statement(FLEX, "a.xml", "upload")
+    held = lambda: [p["symbol"] for p in portfolio.overview("U1234567")["statement_positions"]["positions"]
+                    if p["asset_class"] != "CASH"]
+    assert "MSFT" in held()
+    closed = re.sub(r"<OpenPosition [^>]*symbol=\"MSFT\"[^>]*/>", "", FLEX)
+    assert closed != FLEX
+    portfolio.import_statement(closed, "b.xml", "upload")
+    assert "MSFT" not in held()
 
