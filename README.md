@@ -33,8 +33,8 @@ autobench restart               # stop + start
 autobench stop                  # shut it down
 ```
 
-`autobench start` sets up `backend/.venv` on first run, rebuilds the web UI when `web/` sources
-changed, starts the server in the background (logs in `backend/data/autobench.log`) and waits until
+`autobench start` sets up `server/.venv` on first run, rebuilds the web UI when `app/` sources
+changed, starts the server in the background (logs in `server/data/autobench.log`) and waits until
 it answers. Options: `--port N`, `--rebuild` (force a UI build) and `--fg` (run in the foreground).
 Everything (UI, REST API, MCP and the background jobs) runs in that one process. `autobench serve`
 and `autobench mcp-stdio` pass through to the Python CLI; without the PATH link, use
@@ -44,14 +44,14 @@ Manual equivalent:
 
 ```bash
 (cd web && dart pub get && dart run tool/build.dart)   # build the UI once (needs the Dart SDK)
-cd backend
+cd server
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/autobench serve       # UI + API: http://127.0.0.1:8000 · MCP: http://127.0.0.1:8000/mcp
 ```
 
 The web UI is written in Dart and compiled to JavaScript (no npm or Node). Its chart engine is
 part of the codebase, and its only dependency is `package:web`. For UI development, run
-`dart run tool/build.dart --watch` in `web/` and reload the page after each rebuild.
+`dart run tool/build.dart --watch` in `app/` and reload the page after each rebuild.
 
 ### The workbench
 - **Chart**: 1-4 synced charts (symbol, interval, crosshair and range sync), candles, hollow candles,
@@ -198,7 +198,7 @@ Safety:
   `.claude/skills/` provides the research skills. Try: *"research NVDA for a swing trade"*.
 - **Other MCP clients over HTTP**: `http://127.0.0.1:8000/mcp`
   (e.g. `claude mcp add --transport http autobench http://127.0.0.1:8000/mcp`).
-- **stdio-only clients** (e.g. Claude Desktop): command `backend/.venv/bin/autobench`, args `["mcp-stdio"]`.
+- **stdio-only clients** (e.g. Claude Desktop): command `server/.venv/bin/autobench`, args `["mcp-stdio"]`.
   Drawings are relayed to a running `autobench serve`, so the chart still updates live.
 
 ### Chat with Claude Code from the app (Claude page, ⌘K)
@@ -263,7 +263,7 @@ Strategies and conditions use a safe expression language, for example
 ## Tests
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q        # offline suite
+cd server && .venv/bin/python -m pytest -q        # offline suite
 .venv/bin/python -m pytest -q -m live               # real Yahoo / SEC / Alpaca smoke tests
 ```
 

@@ -1,8 +1,8 @@
-"""End-to-end tests of the compiled web UI (web/build) in headless Chrome, against a real
+"""End-to-end tests of the compiled web UI (app/build) in headless Chrome, against a real
 `autobench serve` on deterministic fake data, with an MCP client playing the agent.
 
 Needs: `pip install -e ".[ui-test]"` (Playwright), Chrome or `playwright install chromium`, and a UI
-build (`cd web && dart run tool/build.dart`). Skipped when any of these is missing."""
+build (`cd app && dart run tool/build.dart`). Skipped when any of these is missing."""
 
 import asyncio
 import json
@@ -20,11 +20,11 @@ import pytest
 pytestmark = pytest.mark.ui
 
 REPO = Path(__file__).resolve().parents[2]
-BUILD = REPO / "web" / "build" / "main.dart.js"
+BUILD = REPO / "app" / "build" / "main.dart.js"
 
 playwright_api = pytest.importorskip("playwright.sync_api")
 if not BUILD.exists():
-    pytest.skip("web UI not built (cd web && dart run tool/build.dart)", allow_module_level=True)
+    pytest.skip("web UI not built (cd app && dart run tool/build.dart)", allow_module_level=True)
 
 MOD = "Meta" if sys.platform == "darwin" else "Control"
 

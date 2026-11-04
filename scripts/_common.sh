@@ -1,7 +1,7 @@
 # Shared by start.sh / stop.sh / status.sh.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BACKEND="$ROOT/backend"
-WEB="$ROOT/web"
+BACKEND="$ROOT/server"
+WEB="$ROOT/app"
 VENV="$BACKEND/.venv"
 RUN_DIR="$BACKEND/data"
 PID_FILE="$RUN_DIR/autobench.pid"

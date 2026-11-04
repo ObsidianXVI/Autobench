@@ -815,7 +815,7 @@ def create_app() -> FastAPI:
     # MCP streamable-HTTP endpoint at /mcp
     app.router.routes.extend(mcp_app.routes)
 
-    ui = REPO_DIR / "web" / "build"
+    ui = REPO_DIR / "app" / "build"
     if ui.is_dir():
         app.mount("/", _UiFiles(directory=ui, html=True), name="web")
     return app

@@ -1,6 +1,6 @@
 """Edits of a symbol's chart layers on behalf of the agent.
 
-The web UI owns the format (web/lib/src/core/layers.dart) and stores it per symbol through
+The web UI owns the format (app/lib/src/core/layers.dart) and stores it per symbol through
 workspace.save_chart_config; this module changes that JSON the same way the UI would (add an indicator
 to a layer, restyle it, add another symbol's series, tie a layer to an interval, ...), saves it and
 publishes `chart_config.updated` so open tabs reload the symbol. The UI repairs any remaining

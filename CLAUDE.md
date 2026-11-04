@@ -5,7 +5,7 @@ fundamentals, filings and quant tools to a web UI (REST + WebSocket) and to AI a
 Agents can draw on the user's live chart; drawings, analyses, notes and watchlists persist in SQLite.
 
 ## Using it as the research agent
-- Start the server: `cd backend && .venv/bin/autobench serve` (http://127.0.0.1:8000, MCP at `/mcp`).
+- Start the server: `cd server && .venv/bin/autobench serve` (http://127.0.0.1:8000, MCP at `/mcp`).
   `.mcp.json` registers it for Claude Code as `autobench`.
 - Skills in `.claude/skills/` define the research method: start with `stock-research`; it delegates to
   `technical-analysis`, `quant-validation`, `fundamental-analysis`, `trade-planning`, `trade-execution`, `chart-annotation`,
@@ -15,8 +15,8 @@ Agents can draw on the user's live chart; drawings, analyses, notes and watchlis
 
 ## Layout
 ```
-backend/src/autobench/
-  app.py            FastAPI app: REST /api/*, WebSocket /ws, MCP routes, static web/build
+server/src/autobench/
+  app.py            FastAPI app: REST /api/*, WebSocket /ws, MCP routes, static app/build
   mcp_server.py     MCP tools/prompts/resources (compact JSON results, ToolError messages)
   guides.py         agent-facing reference text (server instructions, get_guide topics)
   schemas.py        pydantic models shared by REST and MCP (annotations, analyses, view, notes)
@@ -30,8 +30,8 @@ backend/src/autobench/
                     filters, expressions, heatmap, breadth), macro (FRED/Treasury/BLS, cross-asset,
                     calendars), alerts, scheduler (background refresh + alert checks)
   providers/reference.py  Nasdaq listings/calendars, Wikipedia S&P 500, SEC frames, FRED, Treasury, BLS
-backend/tests/      pytest suite (fake provider, no network); live smoke tests: `pytest -m live`
-web/                Dart web UI compiled to JS with dart2js (only dependency: package:web)
+server/tests/       pytest suite (fake provider, no network); live smoke tests: `pytest -m live`
+app/                Dart web UI compiled to JS with dart2js (only dependency: package:web)
   lib/src/core/     pure Dart, no browser APIs: models, NY time/DST, scales/ticks, formatting, markdown
   lib/src/chart/    engine.dart (canvas chart), annotations.dart (drawings + handles), chart_panel.dart
                     (one chart), chart_page.dart (toolbars, grid, shortcuts), drawing_ops.dart (undo)
@@ -43,11 +43,11 @@ web/                Dart web UI compiled to JS with dart2js (only dependency: pa
 ```
 
 ## Commands
-- Install: `cd backend && python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"`
-- Test: `cd backend && .venv/bin/python -m pytest -q` (offline) · `-m live` hits Yahoo/SEC/Alpaca
+- Install: `cd server && python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"`
+- Test: `cd server && .venv/bin/python -m pytest -q` (offline) · `-m live` hits Yahoo/SEC/Alpaca
 - Run with synthetic data: `AUTOBENCH_BAR_PROVIDER=fake .venv/bin/autobench serve`
 - Web UI: `cd web && dart pub get && dart run tool/build.dart` (release) or `--watch` (rebuilds on change;
-  the backend serves web/build from disk, so reload the page). Unit tests: `dart run test/core_test.dart`.
+  the backend serves app/build from disk, so reload the page). Unit tests: `dart run test/core_test.dart`.
 - UI end-to-end tests (headless Chrome, fake data, MCP as the agent): `pip install -e ".[ui-test]"`, build the
   UI, then `pytest -q tests/test_ui_e2e.py`. `window.__autobench` exposes chart hooks for these tests.
 - No npm/Node anywhere: non-Python code is Dart. The web UI's only pub dependency is `package:web`.
@@ -70,7 +70,7 @@ web/                Dart web UI compiled to JS with dart2js (only dependency: pa
   throws at runtime – use `attempt()` from api.dart. When checking a rebuilt UI in a browser, reload with
   a query string: a hash-only navigation keeps the old bundle.
 - Chart layers: per-symbol configs live in state rows `chartcfg:<SYM>` (`_default` = template), served by
-  `/api/chart-config/{symbol}`; the model and pane assignment are in `web/lib/src/core/layers.dart`.
+  `/api/chart-config/{symbol}`; the model and pane assignment are in `app/lib/src/core/layers.dart`.
   Drawings carry `layer` (NULL = main; agent drawings default to `agent`). UI prefs/state: `/api/ui-state`
   (v3, `savedAt`), mirrored to localStorage; `store.flush()` beacons on pagehide.
 - Trading: `services/trading.py` (risk checks, tickets, approvals, kill switch, fills → round trips, equity)

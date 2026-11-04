@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Start Autobench in the background: web UI + REST API + MCP server + background jobs (one process).
 #   autobench start [--port N] [--rebuild] [--fg]   (or scripts/start.sh)
-#     --rebuild  force a fresh web UI build (otherwise it rebuilds only when web/ sources changed)
+#     --rebuild  force a fresh web UI build (otherwise it rebuilds only when app/ sources changed)
 #     --fg       run in the foreground (Ctrl-C to stop) instead of in the background
 set -euo pipefail
 # resolve symlinks (e.g. ~/.local/bin/autobench-start) to find the repo
