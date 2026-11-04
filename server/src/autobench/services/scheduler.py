@@ -62,6 +62,8 @@ def _run() -> None:
                     universe.ensure(stale)
             if _every(5, last, "trading"):
                 trading.tick()
+            if _every(30, last, "cloud_sync"):
+                threading.Thread(target=_cloud_sync, daemon=True).start()
             if _every(1800, last, "flex"):
                 threading.Thread(target=_flex_sync, daemon=True).start()
             if _every(3600, last, "macro"):
@@ -69,6 +71,12 @@ def _run() -> None:
         except Exception:
             log.exception("scheduler iteration failed")
         _stop.wait(5)
+
+
+def _cloud_sync() -> None:
+    from . import cloud_sync
+
+    cloud_sync.maybe_sync()
 
 
 def _flex_sync() -> None:

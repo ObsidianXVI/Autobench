@@ -46,7 +46,7 @@ app/                Dart web UI compiled to JS with dart2js (only dependency: pa
 - Install: `cd server && python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"`
 - Test: `cd server && .venv/bin/python -m pytest -q` (offline) · `-m live` hits Yahoo/SEC/Alpaca
 - Run with synthetic data: `AUTOBENCH_BAR_PROVIDER=fake .venv/bin/autobench serve`
-- Web UI: `cd web && dart pub get && dart run tool/build.dart` (release) or `--watch` (rebuilds on change;
+- Web UI: `cd app && dart pub get && dart run tool/build.dart` (release) or `--watch` (rebuilds on change;
   the backend serves app/build from disk, so reload the page). Unit tests: `dart run test/core_test.dart`.
 - UI end-to-end tests (headless Chrome, fake data, MCP as the agent): `pip install -e ".[ui-test]"`, build the
   UI, then `pytest -q tests/test_ui_e2e.py`. `window.__autobench` exposes chart hooks for these tests.

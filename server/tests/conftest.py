@@ -10,6 +10,7 @@ os.environ["AUTOBENCH_BROKER"] = "sim"  # never reach a real IB Gateway from tes
 os.environ["AUTOBENCH_ALLOW_LIVE_TRADING"] = "0"  # tests that want it on set it themselves; ignore .env
 os.environ["AUTOBENCH_IBKR_FLEX_TOKEN"] = ""  # an empty variable also hides a value in .env
 os.environ["AUTOBENCH_IBKR_FLEX_QUERY"] = ""
+os.environ["AUTOBENCH_CLOUD_SYNC_PROJECT"] = ""  # never write to the real cloud store from tests
 os.environ.pop("ALPACA_API_KEY_ID", None)
 os.environ.pop("ALPACA_API_KEY", None)
 

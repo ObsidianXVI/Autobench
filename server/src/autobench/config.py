@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     autobench_ibkr_flex_token: str = ""
     autobench_ibkr_flex_query: str = ""
 
+    # Vral Altos cloud copy of the portfolio (services/cloud_sync.py); off when the project is empty
+    autobench_cloud_sync_project: str = ""
+    autobench_cloud_sync_interval: int = 300  # seconds between live pushes while IB Gateway is connected
+
     # Claude page: chat with Claude Code sessions on this machine (runs the `claude` command)
     autobench_claude_chat: bool = True
     autobench_claude_bin: str = ""  # default: `claude` on PATH or ~/.local/bin/claude
