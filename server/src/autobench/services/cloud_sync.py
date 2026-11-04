@@ -145,7 +145,8 @@ def push(snap: dict, project: str, client: httpx.Client, now: datetime | None = 
     token = access_token(client)
     headers = {"Authorization": f"Bearer {token}", "x-goog-user-project": project}
     body = document({**snap, "synced_at": now})
-    base = f"{FIRESTORE}/projects/{project}/databases/(default)/documents/autobench/latest"
+    # The Vral Altos platform database ((default) is Financier's).
+    base = f"{FIRESTORE}/projects/{project}/databases/platform/documents/autobench/latest"
     day = now.astimezone().strftime("%Y-%m-%d")
     for url in (base, f"{base}/days/{day}"):
         r = client.patch(url, json=body, headers=headers)

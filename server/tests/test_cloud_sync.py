@@ -11,7 +11,7 @@ import respx
 from autobench.config import get_settings
 from autobench.services import cloud_sync
 
-DOC = "https://firestore.googleapis.com/v1/projects/test-proj/databases/(default)/documents/autobench/latest"
+DOC = "https://firestore.googleapis.com/v1/projects/test-proj/databases/platform/documents/autobench/latest"
 
 
 @pytest.fixture(autouse=True)
