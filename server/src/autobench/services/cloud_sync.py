@@ -21,7 +21,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -154,6 +154,42 @@ def push(snap: dict, project: str, client: httpx.Client, now: datetime | None = 
             raise RuntimeError(f"Firestore write failed ({r.status_code}): {r.text[:300]}")
 
 
+# ------------------------------------------------------------------------------ telemetry
+
+def telemetry(project: str, client: httpx.Client, severity: str, message: str,
+              fields: dict | None = None, counts: dict | None = None,
+              now: datetime | None = None) -> None:
+    """One log entry plus metric counters in the Vral Altos platform database, in the
+    shared telemetry shape (meshes/service_mesh `Telemetry`): `logs/{id}` and
+    `metrics/autobench~<yyyyMMddHH>`. Best effort: never raises."""
+    try:
+        now = now or datetime.now(timezone.utc)
+        root = f"projects/{project}/databases/platform/documents"
+        token = access_token(client)
+        hour = now.strftime("%Y%m%d%H")
+        minute = f"m{now.minute:02d}"
+        start = now.replace(minute=0, second=0, microsecond=0)
+        counts = {**(counts or {}), f"log_{severity}": 1}
+        writes = [
+            {"update": {"name": f"{root}/logs/{os.urandom(10).hex()}", **document({
+                "at": now, "source": "autobench", "host": os.uname().nodename, "component": "cloud_sync",
+                "severity": severity, "message": message, "fields": fields or {},
+                "expireAt": now + timedelta(days=14)})}},
+            {"update": {"name": f"{root}/metrics/autobench~{hour}", **document({
+                "source": "autobench", "hour": start, "expireAt": start + timedelta(days=30)})},
+             "updateMask": {"fieldPaths": ["source", "hour", "expireAt"]},
+             "updateTransforms": [t for k, v in counts.items() for t in (
+                 {"fieldPath": f"h.{k}", "increment": encode(v)},
+                 {"fieldPath": f"m.{minute}.{k}", "increment": encode(v)})]},
+        ]
+        r = client.post(f"{FIRESTORE}/{root}:commit", json={"writes": writes},
+                        headers={"Authorization": f"Bearer {token}", "x-goog-user-project": project})
+        if r.status_code >= 400:
+            log.warning("telemetry not written (%s): %s", r.status_code, r.text[:200])
+    except Exception as e:  # telemetry never breaks the sync
+        log.warning("telemetry not written: %s", e)
+
+
 def maybe_sync(client_factory: Callable[[], httpx.Client] | None = None,
                snapshot: Callable[[], dict] = build_snapshot) -> str | None:
     """Push if due. Returns the source pushed ("live" / "statement"), or None if nothing was sent."""
@@ -176,14 +212,23 @@ def maybe_sync(client_factory: Callable[[], httpx.Client] | None = None,
         if not due:
             return None
         factory = client_factory or (lambda: httpx.Client(timeout=30))
+        started = time.time()
         with factory() as client:
             push(snap, project, client)
+            telemetry(project, client, "info", f"Pushed the {snap['source']} portfolio snapshot",
+                      {"source": snap["source"], "durationMs": int((time.time() - started) * 1000)},
+                      {"syncs": 1})
         _state.update(last_push=now, last_hash=fingerprint, last_error=None, last_source=snap["source"])
         log.info("cloud sync: pushed %s snapshot to %s", snap["source"], project)
         return snap["source"]
     except Exception as e:
         _state["last_error"] = str(e)
         log.warning("cloud sync failed: %s", e)
+        try:
+            with (client_factory or (lambda: httpx.Client(timeout=30)))() as client:
+                telemetry(project, client, "error", "Portfolio sync failed", {"error": str(e)[:500]}, {"sync_failed": 1})
+        except Exception:
+            pass
         return None
     finally:
         _lock.release()

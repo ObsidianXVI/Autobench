@@ -34,6 +34,7 @@ def _routes(mock):
     mock.post(cloud_sync.TOKEN_URL).respond(200, json={"access_token": "tok", "expires_in": 3600})
     latest = mock.patch(DOC).respond(200, json={})
     day = mock.patch(url__regex=r".*/autobench/latest/days/\d{4}-\d{2}-\d{2}$").respond(200, json={})
+    mock.post(url__regex=r".*/databases/platform/documents:commit$").respond(200, json={})
     return latest, day
 
 
@@ -112,3 +113,20 @@ def test_build_snapshot_uses_real_services_with_no_broker():
     assert s["broker"]["connected"] is False
     assert "max_position_pct" in s["limits"]["limits"]
     assert s["open_trades"] == []
+
+
+def test_a_push_reports_to_vral_altos_telemetry(monkeypatch):
+    _enable(monkeypatch)
+    with respx.mock(assert_all_called=False) as mock:
+        _routes(mock)
+        commit = mock.routes[-1]
+        assert cloud_sync.maybe_sync(snapshot=lambda: snap()) == "statement"
+        writes = json.loads(commit.calls.last.request.content)["writes"]
+    entry = writes[0]["update"]
+    assert "/logs/" in entry["name"]
+    assert entry["fields"]["source"]["stringValue"] == "autobench"
+    assert entry["fields"]["severity"]["stringValue"] == "info"
+    metric = writes[1]
+    assert metric["update"]["name"].split("/")[-1].startswith("autobench~")
+    paths = {t["fieldPath"] for t in metric["updateTransforms"]}
+    assert {"h.syncs", "h.log_info"} <= paths
