@@ -336,7 +336,9 @@ class TradingPage {
     _ov = ov;
     _renderKpis();
     _renderAlloc();
-    _renderTab();
+    // The risk form only depends on the settings, not the account: re-rendering it on every account/order event
+    // would wipe the user's unsaved edits.
+    if (_tab != 'risk') _renderTab();
   }
 
   void _renderKpis() {
@@ -799,14 +801,28 @@ class TradingPage {
           'click': (_) async {
             List<String> syms(String v) => [for (final x in v.split(RegExp(r'[,\s]+'))) if (x.trim().isNotEmpty) x.trim().toUpperCase()];
             final limits = <String, Object?>{
-              for (final e in inputs.entries)
-                e.key: e.value.type == 'checkbox' ? e.value.checked : num.tryParse(e.value.value),
               'symbol_allowlist': syms(allow.value),
               'symbol_blocklist': syms(block.value),
             };
+            for (final e in inputs.entries) {
+              final el = e.value;
+              if (el.type == 'checkbox') {
+                limits[e.key] = el.checked;
+                continue;
+              }
+              final v = num.tryParse(el.value.trim());
+              if (v == null || v <= 0) {
+                toast('${el.getAttribute('aria-label')}: enter a number above 0', kind: 'error', ms: 4000);
+                el.focus();
+                return;
+              }
+              limits[e.key] = e.key == 'max_orders_per_day' ? v.round() : v;
+            }
+            final ttlMin = int.tryParse(ttl.value.trim()) ?? num.tryParse(ttl.value.trim())?.round();
             try {
-              await trade.saveSettings({'limits': limits, 'ticket_ttl_minutes': int.tryParse(ttl.value) ?? 240});
+              await trade.saveSettings({'limits': limits, if (ttlMin != null) 'ticket_ttl_minutes': ttlMin});
               toast('Risk limits saved', kind: 'success', ms: 2000);
+              await _renderRisk(); // show what the server stored
             } catch (e) {
               toast('$e', kind: 'error', ms: 6000);
             }

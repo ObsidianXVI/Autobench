@@ -995,3 +995,32 @@ def test_quick_chat_from_any_page_sends_the_view(page, server):
     assert "results" in page.inner_text(".qc .cc-share")
     page.click(".qc button[aria-label='Close quick chat']")
     page.wait_for_selector(".qc[hidden]", state="attached")
+
+
+def test_risk_limits_keep_unsaved_edits_through_trading_events(page, server):
+    page.click("a.page-tab:has-text('Trading')")
+    page.click(".tr-tabs .tab:has-text('Risk')")
+    page.wait_for_selector("input[aria-label='Max order value ($)']")
+    page.fill("input[aria-label='Max order value ($)']", "12345")
+    page.uncheck("input[aria-label='Agent entries need a stop-loss']")
+    # account / order events arrive while the user is editing
+    for p in (100, 101, 102):
+        sim_price(server, "SPY", p)
+    httpx.put(f"{server}/api/trading/settings", json={"mode": "confirm"}, headers=TH)  # publishes trading.status
+    page.wait_for_timeout(1200)
+    assert page.input_value("input[aria-label='Max order value ($)']") == "12345"
+    assert not page.is_checked("input[aria-label='Agent entries need a stop-loss']")
+    page.fill("input[aria-label='Max orders per day']", "")  # an empty field is rejected in the UI, not sent
+    page.click("button:has-text('Save limits')")
+    page.wait_for_selector(".toast:has-text('enter a number above 0')")
+    page.fill("input[aria-label='Max orders per day']", "12")
+    page.click("button:has-text('Save limits')")
+    page.wait_for_selector(".toast:has-text('Risk limits saved')")
+    lim = httpx.get(f"{server}/api/trading/settings").json()["limits"]
+    assert lim["max_order_value"] == 12345 and lim["max_orders_per_day"] == 12 and lim["require_stop_for_agent"] is False
+    page.reload()
+    page.click("a.page-tab:has-text('Trading')")
+    page.click(".tr-tabs .tab:has-text('Risk')")
+    page.wait_for_selector("input[aria-label='Max order value ($)']")
+    assert page.input_value("input[aria-label='Max order value ($)']") == "12345"
+
