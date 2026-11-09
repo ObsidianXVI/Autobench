@@ -505,6 +505,17 @@ class App {
       case 'portfolio.imported':
         final po = _pageObjects['portfolio'];
         if (po is PortfolioPage) po.onImported();
+      case 'claude.system_prompt':
+        final cp = _pageObjects['claude'];
+        if (cp is ClaudePage) cp.onEvent(e);
+        if (d['updated_by'].s == 'agent') {
+          toast(d['note'].s ?? 'See the Claude page', title: 'Agent updated its system prompt', ms: 8000, actionLabel: 'Review',
+              onAction: () {
+            store.page.value = 'claude';
+            final p = _pageObjects['claude'];
+            if (p is ClaudePage) p.openPrompt();
+          });
+        }
       case 'claude.run' || 'claude.event' || 'claude.agent':
         final cp = _pageObjects['claude'];
         if (cp is ClaudePage) cp.onEvent(e);

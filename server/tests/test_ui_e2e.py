@@ -1024,3 +1024,26 @@ def test_risk_limits_keep_unsaved_edits_through_trading_events(page, server):
     page.wait_for_selector("input[aria-label='Max order value ($)']")
     assert page.input_value("input[aria-label='Max order value ($)']") == "12345"
 
+
+def test_claude_system_prompt_editor_and_agent_updates(page, server):
+    page.click("a.page-tab:has-text('Claude')")
+    page.click("button[aria-label='System prompt']")
+    page.wait_for_selector(".cc-prompt:not([hidden]) textarea[aria-label='System prompt']")
+    assert page.is_hidden(".cc-chat-box")
+    page.fill("textarea[aria-label='System prompt']", "Lead with the recommendation.")
+    page.click("button[aria-label='Save system prompt']")
+    page.wait_for_selector(".toast:has-text('System prompt saved')")
+    assert httpx.get(f"{server}/api/claude/system-prompt", headers=TH).json()["text"] == "Lead with the recommendation."
+    # the agent rewrites it: the user is told, the editor reloads, the old version can be restored
+    mcp_call(server, "update_system_prompt", {"text": "Lead with the recommendation.\nAlways give a stop.",
+                                              "reason": "User wants a stop on every call"})
+    page.wait_for_selector(".toast:has-text('Agent updated its system prompt')")
+    page.wait_for_function("document.querySelector(\"textarea[aria-label='System prompt']\").value.includes('Always give a stop')")
+    page.wait_for_selector(".cc-prompt-meta:has-text('by the agent')")
+    page.click(".cc-prompt-ver button:has-text('Restore')")
+    assert page.input_value("textarea[aria-label='System prompt']") == "Lead with the recommendation."
+    page.click("button[aria-label='Save system prompt']")
+    page.wait_for_function("fetch('/api/claude/system-prompt', {headers: {'X-Autobench': '1'}}).then(r => r.json())"
+                           ".then(p => p.text === 'Lead with the recommendation.' && p.updated_by === 'user')")
+    page.click("button[aria-label='Close system prompt']")
+    page.wait_for_selector(".cc-chat-box:not([hidden])")

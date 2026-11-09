@@ -281,3 +281,34 @@ def test_agent_session_is_chosen_and_quick_chat_goes_to_it(claude, client):
     assert "--fork-session" in _calls(claude)[-1]["args"]
     assert client.get("/api/claude/status", headers=H).json()["agent"] == FORK
     assert client.put("/api/claude/agent", json={"session": None}, headers=H).json() == {"session_id": None}
+
+
+def test_system_prompt_is_edited_versioned_and_appended_to_runs(claude, client):
+    assert client.get("/api/claude/system-prompt").status_code in (400, 403)  # needs the UI header
+    assert client.get("/api/claude/system-prompt", headers=H).json()["text"] == ""
+    # no prompt: the flag is not passed
+    client.post(f"/api/claude/sessions/{SID}/messages", json={"text": "one"}, headers=H)
+    assert _wait(lambda: not claude_code.runs.active())
+    assert "--append-system-prompt-file" not in _calls(claude)[-1]["args"]
+
+    bus.history.clear()
+    r = client.put("/api/claude/system-prompt", json={"text": "Lead with the recommendation.\r\n"}, headers=H).json()
+    assert r["text"] == "Lead with the recommendation." and r["updated_by"] == "user" and r["history"] == []
+    assert any(m["type"] == "claude.system_prompt" for m in bus.history)
+    client.post(f"/api/claude/sessions/{SID}/messages", json={"text": "two"}, headers=H)
+    assert _wait(lambda: not claude_code.runs.active())
+    a = _calls(claude)[-1]["args"]
+    path = a[a.index("--append-system-prompt-file") + 1]
+    assert open(path).read() == "Lead with the recommendation."
+    assert oct(os.stat(path).st_mode & 0o777) == "0o600"
+
+    # the agent rewrites it through MCP; the user's version is kept in the history
+    from autobench import mcp_server
+    assert json.loads(mcp_server.get_system_prompt())["text"] == "Lead with the recommendation."
+    with pytest.raises(Exception):
+        mcp_server.update_system_prompt("x", reason=" ")
+    mcp_server.update_system_prompt("Lead with the recommendation.\nAlways state the stop.", reason="User asked for stops")
+    p = client.get("/api/claude/system-prompt", headers=H).json()
+    assert p["updated_by"] == "agent" and p["note"] == "User asked for stops"
+    assert [v["text"] for v in p["history"]] == ["Lead with the recommendation."] and p["history"][0]["by"] == "user"
+    assert client.put("/api/claude/system-prompt", json={"text": "x" * (claude_code.PROMPT_MAX + 1)}, headers=H).status_code == 400

@@ -112,6 +112,7 @@ const prefDefaults = <String, Object?>{
   'portfolio.start': '',
   'portfolio.end': '',
   'claude.session': '',
+  'claude.prompt': '', // 'open': the system prompt editor is showing
   'claude.shareView': true,
   'journal.drawDays': 30,
   'calendar.universe': 'sp500',

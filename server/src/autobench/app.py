@@ -167,6 +167,11 @@ class ClaudeNew(BaseModel):
     agent: bool = False
 
 
+class ClaudePrompt(BaseModel):
+    text: str = Field("", max_length=claude_code.PROMPT_MAX + 1000)
+    note: str | None = None
+
+
 class ClaudeAgent(BaseModel):
     session: str | None = None
 
@@ -768,6 +773,14 @@ def create_app() -> FastAPI:
     @app.post("/api/claude/sessions/{ref}/messages", dependencies=guard)
     def claude_send(ref: str, body: ClaudeMessage):
         return claude_code.send(ref, body.text, body.view, body.fork)
+
+    @app.get("/api/claude/system-prompt", dependencies=guard)
+    def claude_prompt_get():
+        return claude_code.system_prompt()
+
+    @app.put("/api/claude/system-prompt", dependencies=guard)
+    def claude_prompt_put(body: ClaudePrompt):
+        return claude_code.set_system_prompt(body.text, "user", body.note)
 
     @app.put("/api/claude/agent", dependencies=guard)
     def claude_agent_set(body: ClaudeAgent):

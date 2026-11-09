@@ -1,6 +1,7 @@
 // Claude page: the Claude Code sessions on this Mac (from Claude Code's own files) and a chat with the
 // selected one. A session can be made the agent: the one the quick chat (⌘K, on any page) talks to.
 import 'dart:async';
+import 'dart:js_interop';
 
 import 'package:web/web.dart';
 
@@ -20,6 +21,8 @@ class ClaudePage {
   final HTMLElement _head = h('div.cc-head');
   late final HTMLInputElement _search;
   late final ChatView _chat;
+  late final _PromptEditor _prompt;
+  final HTMLElement _chatBox = h('div.cc-chat-box');
 
   List<J> _sessions = [];
   String? _loadError;
@@ -32,6 +35,8 @@ class ClaudePage {
 
   ClaudePage() {
     _chat = ChatView(onRunEnded: _loadSessions);
+    _prompt = _PromptEditor(onClose: () => _showPrompt(false));
+    append(_chatBox, [_chat.thread, _chat.composer]);
     _search = h('input.input.cc-search', null, {'type': 'search', 'placeholder': 'Search sessions', 'aria-label': 'Search sessions'},
         {'input': (_) => _renderList()}) as HTMLInputElement;
     append(root, [
@@ -40,12 +45,17 @@ class ClaudePage {
           _search,
           h('button.icon-btn', icon('refresh', size: 15), {'type': 'button', 'data-tip': 'Refresh', 'aria-label': 'Refresh sessions'},
               {'click': (_) => _loadSessions()}),
+          h('button.icon-btn.cc-prompt-btn', icon('edit', size: 15), {
+            'type': 'button',
+            'data-tip': 'System prompt: standing instructions for every run started here',
+            'aria-label': 'System prompt',
+          }, {'click': (_) => _showPrompt(_prompt.root.isHidden)}),
           h('button.btn.small.primary', [icon('plus', size: 14), 'New'], {'type': 'button', 'data-tip': 'Start a new session in a folder'},
               {'click': (_) => _newSession()}),
         ]),
         _list,
       ]),
-      h('section.cc-main', [_head, _chat.thread, _chat.composer]),
+      h('section.cc-main', [_head, _chatBox, _prompt.root]),
     ]);
     claudeStatus.listen((_) {
       _renderList();
@@ -56,7 +66,19 @@ class ClaudePage {
   void onShow() {
     loadClaudeStatus();
     _loadSessions();
+    if (store.pref<String>('claude.prompt') == 'open') _showPrompt(true);
   }
+
+  /// Opens the system prompt editor in place of the chat (from the toolbar or a toast).
+  void _showPrompt(bool open) {
+    store.setPref('claude.prompt', open ? 'open' : '');
+    _prompt.root.isHidden = !open;
+    _chatBox.isHidden = open;
+    root.querySelector('.cc-prompt-btn')?.classList.toggle('on', open);
+    if (open) _prompt.load();
+  }
+
+  void openPrompt() => _showPrompt(true);
 
   Future<void> _loadSessions() async {
     try {
@@ -82,6 +104,10 @@ class ClaudePage {
   void onEvent(ServerEvent e) {
     if (e.type == 'claude.agent') {
       loadClaudeStatus();
+      return;
+    }
+    if (e.type == 'claude.system_prompt') {
+      _prompt.onChanged(e.data);
       return;
     }
     _chat.onEvent(e);
@@ -227,5 +253,161 @@ class ClaudePage {
   void _copy(String text, String done) {
     window.navigator.clipboard.writeText(text);
     toast(done, ms: 1800);
+  }
+}
+
+
+/// The system prompt: appended to Claude Code's own prompt on every run the app starts. The agent can rewrite it
+/// (update_system_prompt), so each version is kept and can be restored.
+class _PromptEditor {
+  final void Function() onClose;
+  final HTMLElement root = h('section.cc-prompt');
+  final HTMLElement _meta = h('div.muted.small.cc-prompt-meta');
+  final HTMLElement _notice = h('div');
+  final HTMLElement _count = h('span.muted.tiny');
+  final HTMLElement _history = h('div.cc-prompt-history');
+  late final HTMLTextAreaElement _text;
+  J _data = const J(null);
+  String _saved = '';
+  bool _loading = false;
+
+  _PromptEditor({required this.onClose}) {
+    root.isHidden = true;
+    _text = h('textarea.input.cc-prompt-text', null, {
+      'aria-label': 'System prompt',
+      'spellcheck': 'false',
+      'placeholder': 'e.g. Always size trades to my risk tiers. Answer briefly; lead with the recommendation…',
+    }, {'input': (_) => _renderCount()}) as HTMLTextAreaElement;
+    _text.addEventListener('keydown', ((KeyboardEvent e) {
+      if (e.key == 's' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        _save();
+      }
+    }).toJS);
+    append(root, [
+      h('div.cc-prompt-head', [
+        h('div', [
+          h('h2', 'System prompt'),
+          h('div.muted.small', 'Added to Claude Code\'s own prompt on every message sent from Autobench (this page and ⌘K). '
+              'The agent can read and update it; each change is kept below.'),
+        ]),
+        h('span.spacer'),
+        h('button.icon-btn', icon('x', size: 15), {'type': 'button', 'aria-label': 'Close system prompt', 'data-tip': 'Back to the chat'},
+            {'click': (_) => onClose()}),
+      ]),
+      _notice,
+      _meta,
+      _text,
+      h('div.row.gap.cc-prompt-actions', [
+        _count,
+        h('span.spacer'),
+        h('button.btn.small', 'Discard changes', {'type': 'button', 'aria-label': 'Discard prompt changes'}, {
+          'click': (_) {
+            _text.value = _saved;
+            _renderCount();
+          },
+        }),
+        h('button.btn.small.primary', 'Save', {'type': 'button', 'aria-label': 'Save system prompt', 'data-tip': '⌘S'},
+            {'click': (_) => _save()}),
+      ]),
+      _history,
+    ]);
+  }
+
+  bool get _dirty => _text.value.trim() != _saved.trim();
+  int get _max => _data['max_length'].i ?? 20000;
+
+  Future<void> load({bool keepEdits = false}) async {
+    if (_loading) return;
+    _loading = true;
+    if (!keepEdits) _text.disabled = true; // a load finishing after the user typed would wipe the text
+    try {
+      _data = await request('/api/claude/system-prompt');
+    } on ApiError catch (e) {
+      replace(_notice, h('div.check-msg.error', e.message));
+      return;
+    } finally {
+      _loading = false;
+      _text.disabled = false;
+    }
+    _saved = _data['text'].s ?? '';
+    if (!keepEdits) _text.value = _saved;
+    replace(_notice, null);
+    _render();
+  }
+
+  /// A change saved elsewhere (the agent, another tab): reload unless the user has unsaved edits.
+  void onChanged(J d) {
+    if (root.isHidden) return;
+    if (!_dirty) {
+      load();
+      return;
+    }
+    replace(_notice, h('div.check-msg.warn', [
+      '${d['updated_by'].s == 'agent' ? 'The agent' : 'Someone'} saved a new version while you were editing. ',
+      h('button.link', 'Load it (discards your edits)', {'type': 'button'}, {'click': (_) => load()}),
+    ]));
+    load(keepEdits: true);
+  }
+
+  Future<void> _save() async {
+    if (_text.value.length > _max) {
+      toast('The prompt is longer than $_max characters', kind: 'error');
+      return;
+    }
+    try {
+      _data = await request('/api/claude/system-prompt', method: 'PUT', body: {'text': _text.value});
+      _saved = _data['text'].s ?? '';
+      _text.value = _saved;
+      replace(_notice, null);
+      _render();
+      toast('Used from the next message', title: 'System prompt saved', kind: 'success', ms: 2200);
+    } on ApiError catch (e) {
+      toast(e.message, kind: 'error', title: 'System prompt');
+    }
+  }
+
+  String _by(String? by) => by == 'agent' ? 'the agent' : 'you';
+
+  void _render() {
+    final at = _data['updated_at'].s;
+    final note = _data['note'].s;
+    replace(_meta, at == null
+        ? 'Not set yet.'
+        : ['Saved ${ago(at)} by ${_by(_data['updated_by'].s)}', if (note != null) ' — “$note”']);
+    _renderCount();
+    final hist = _data['history'].list;
+    replace(_history, hist.isEmpty
+        ? null
+        : [
+            h('div.cc-prompt-history-title', 'Earlier versions'),
+            for (final v in hist)
+              h('div.cc-prompt-ver', [
+                h('div.cc-prompt-ver-head', [
+                  h('span.small', '${ago(v['at'].s ?? '')} · ${_by(v['by'].s)}'),
+                  if (v['note'].s != null) h('span.muted.small.cc-prompt-ver-note', v['note'].s),
+                  h('span.spacer'),
+                  h('button.btn.small', 'Restore', {'type': 'button', 'data-tip': 'Put this version in the editor (then Save)'}, {
+                    'click': (_) {
+                      _text.value = v['text'].s ?? '';
+                      _renderCount();
+                      _text.focus();
+                    },
+                  }),
+                ]),
+                h('div.muted.tiny.cc-prompt-ver-text', _preview(v['text'].s ?? '')),
+              ]),
+          ]);
+  }
+
+  String _preview(String t) {
+    final one = t.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return one.isEmpty ? '(empty)' : (one.length > 220 ? '${one.substring(0, 220)}…' : one);
+  }
+
+  void _renderCount() {
+    final n = _text.value.length;
+    _count.textContent = '$n / $_max${_dirty ? ' · unsaved' : ''}';
+    _count.classList.toggle('error', n > _max);
   }
 }

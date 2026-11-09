@@ -980,6 +980,21 @@ button.panel-title:hover { background: var(--hover); }
 .cc-dot.run { background: var(--agent); animation: cc-pulse 1.2s ease-in-out infinite; }
 @keyframes cc-pulse { 50% { opacity: .35; } }
 .cc-main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.cc-chat-box { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.cc-chat-box[hidden], .cc-prompt[hidden] { display: none; }
+.cc-prompt-btn.on { color: var(--accent); }
+.cc-prompt { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 18px 24px; display: flex; flex-direction: column; gap: 10px; }
+.cc-prompt-head { display: flex; align-items: flex-start; gap: 12px; }
+.cc-prompt-head h2 { margin: 0 0 4px; font-size: 16px; font-weight: 600; }
+.cc-prompt-text { min-height: 280px; resize: vertical; font-family: var(--mono, ui-monospace, monospace); font-size: 12.5px; line-height: 1.5; }
+.cc-prompt-actions { align-items: center; }
+.cc-prompt-actions .error { color: var(--down); }
+.cc-prompt-history { display: grid; gap: 8px; margin-top: 6px; }
+.cc-prompt-history-title { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.cc-prompt-ver { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; display: grid; gap: 4px; }
+.cc-prompt-ver-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.cc-prompt-ver-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.cc-prompt-ver-text { overflow-wrap: anywhere; }
 .cc-head { padding: 12px 18px 10px; border-bottom: 1px solid var(--border); display: grid; gap: 8px; }
 .cc-head:empty { display: none; }
 .cc-head h2 { margin: 0; font-size: 16px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

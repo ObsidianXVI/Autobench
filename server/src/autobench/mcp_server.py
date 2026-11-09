@@ -21,7 +21,7 @@ from .services import analyses, annotations, backtest, filings, fundamentals, le
 from .services import news as news_svc
 from .services import options as options_svc
 from .services import alerts as alerts_svc
-from .services import chart_layers, journal, macro, patterns, portfolio, risk, screener, technicals, workspace
+from .services import chart_layers, claude_code, journal, macro, patterns, portfolio, risk, screener, technicals, workspace
 from .services.events import bus
 from .services.trading import trading
 from .services import indicators as ind
@@ -1132,6 +1132,30 @@ def show_in_ui(
                "panel": panel, "watchlist": watchlist, "tab": tab}
     bus.publish("ui.navigate", payload)
     return {"ok": True, **payload}
+
+
+@tool()
+def get_system_prompt() -> Any:
+    """Your standing instructions: the system prompt the user set in Autobench (Claude page), appended to every
+    run started from the app. Read it before update_system_prompt so you edit rather than overwrite it."""
+    p = claude_code.system_prompt()
+    return {"text": p["text"], "updated_at": p["updated_at"], "updated_by": p["updated_by"], "note": p["note"],
+            "versions": len(p["history"]), "max_length": p["max_length"]}
+
+
+@tool()
+def update_system_prompt(
+    text: Annotated[str, Field(description="The complete new prompt (replaces the old one; Markdown)")],
+    reason: Annotated[str, Field(description="One line on what changed and why; shown to the user")],
+) -> Any:
+    """Rewrite your own standing instructions (the Autobench system prompt). Use it to keep durable working
+    preferences the user stated or lessons that should change how you work in every future session; facts about
+    stocks belong in save_note. Start from get_system_prompt and keep the user's instructions unless they asked to
+    change them. The user sees every change and can revert it. Takes effect on the next message."""
+    if not reason.strip():
+        raise ValueError("Give a reason for the change")
+    p = claude_code.set_system_prompt(text, by=AUTHOR, note=reason)
+    return {"ok": True, "updated_at": p["updated_at"], "length": len(p["text"])}
 
 
 @tool()

@@ -36,6 +36,9 @@ from .events import bus
 log = logging.getLogger(__name__)
 
 _AGENT_KEY = "claude:agent_session"
+_PROMPT_KEY = "claude:system_prompt"
+PROMPT_MAX = 20_000
+_PROMPT_HISTORY = 30
 _VIEW = re.compile(r"\A<autobench-view>\n.*?\n(\{.*?\})\n</autobench-view>\n\n", re.S)
 _VIEW_MAX = 12_000
 _HEAD = 64 * 1024
@@ -119,6 +122,48 @@ def set_agent_session(ref: str | None) -> dict:
 
 
 # ------------------------------------------------------------------------------------------- sessions
+
+
+# --- system prompt: appended to Claude Code's own prompt on every run started from the app -----------------
+def system_prompt() -> dict:
+    """The current text plus its edit history (newest first), so a change by the agent can be reviewed/reverted."""
+    raw = db.state_get(_PROMPT_KEY) or {}
+    return {"text": raw.get("text", ""), "updated_at": raw.get("updated_at"), "updated_by": raw.get("updated_by"),
+            "note": raw.get("note"), "history": raw.get("history", []), "max_length": PROMPT_MAX}
+
+
+def set_system_prompt(text: str, by: str = "user", note: str | None = None) -> dict:
+    """Replaces the system prompt; [by] is "user" or "agent". Takes effect on the next message sent."""
+    text = (text or "").replace("\r\n", "\n").strip()
+    if len(text) > PROMPT_MAX:
+        raise ValueError(f"System prompt is too long ({len(text)} characters; max {PROMPT_MAX})")
+    cur = system_prompt()
+    if text == cur["text"]:
+        return cur
+    history = cur["history"]
+    if cur["updated_at"]:  # keep the version being replaced
+        history = [{"text": cur["text"], "at": cur["updated_at"], "by": cur["updated_by"], "note": cur["note"]}, *history]
+    note = (note or "").strip()[:300] or None
+    db.state_set(_PROMPT_KEY, {"text": text, "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                               "updated_by": by, "note": note, "history": history[:_PROMPT_HISTORY]})
+    out = system_prompt()
+    bus.publish("claude.system_prompt", {"updated_by": by, "note": note, "length": len(text)})
+    return out
+
+
+def _prompt_file() -> Path | None:
+    """Writes the current prompt to a private file for --append-system-prompt-file (keeps it out of `ps`)."""
+    text = system_prompt()["text"]
+    if not text:
+        return None
+    path = get_settings().db_path.parent / "claude_system_prompt.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f".{uuid.uuid4().hex[:6]}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
+    return path
 
 
 def _read_edges(path: Path, size: int) -> tuple[bytes, bytes]:
@@ -513,6 +558,9 @@ def create(cwd: str, text: str, name: str | None = None, view: dict | None = Non
 def _start(run: Run, args: list[str]) -> dict:
     # as the user configured it: no permission checks (prompts could not be answered from the app anyway)
     args += ["--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"]
+    prompt = _prompt_file()
+    if prompt:
+        args += ["--append-system-prompt-file", str(prompt)]
     text = with_view(run.text, run.view)
     try:
         run.proc = subprocess.Popen(args, cwd=run.cwd, env=_env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
