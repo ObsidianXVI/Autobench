@@ -304,6 +304,9 @@ class TStatus {
   final int pendingTickets;
   final J connection, halt;
 
+  /// The managed IB Gateway on Cloud Run ({managed, state, message, mode}); {managed: false} elsewhere.
+  final J gateway;
+
   /// Accounts in the broker login: (id, paper). One login can hold several.
   final List<(String, bool?)> accounts;
 
@@ -322,6 +325,7 @@ class TStatus {
     this.connection = const J(null),
     this.halt = const J(null),
     this.accounts = const [],
+    this.gateway = const J(null),
   });
 
   factory TStatus.fromJson(J j) => TStatus(
@@ -339,7 +343,11 @@ class TStatus {
         connection: j['connection'],
         halt: j['halt'],
         accounts: [for (final a in j['accounts'].list) (a['id'].s ?? '', a['paper'].b)],
+        gateway: j['gateway'],
       );
+
+  bool get gatewayManaged => gateway['managed'].b ?? false;
+  String get gatewayState => gateway['state'].s ?? 'stopped';
 
   bool get isLive => paper == false;
   bool get multiAccount => accounts.length > 1;

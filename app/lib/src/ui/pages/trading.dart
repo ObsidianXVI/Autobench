@@ -87,6 +87,90 @@ class TradingPage {
 
   // ---------------------------------------------------------------- header & safety controls
 
+  // ---------------------------------------------------------------- managed IB Gateway (Cloud Run)
+
+  Future<void> _gateway(String action) async {
+    try {
+      await request('/api/trading/gateway/$action', method: 'POST', body: <String, Object?>{});
+    } catch (e) {
+      toast('$e', title: 'IB Gateway', kind: 'error');
+    }
+    await trade.refreshStatus();
+  }
+
+  String _code = '';
+
+  /// IBKR's second factor: an authenticator-app code is typed in here and the server enters it in IB Gateway.
+  HTMLElement _codeForm() {
+    final input = h('input.input', null, {
+      'value': _code, 'inputmode': 'numeric', 'autocomplete': 'one-time-code', 'maxlength': '10',
+      'placeholder': '6-digit code', 'aria-label': 'Authenticator code', 'style': 'width:9em;text-align:center',
+    }) as HTMLInputElement;
+    input.onInput.listen((_) => _code = input.value);
+    Future<void> send() async {
+      final code = input.value.replaceAll(' ', '');
+      if (code.isEmpty) return;
+      _code = '';
+      try {
+        await request('/api/trading/gateway/2fa', method: 'POST', body: <String, Object?>{'code': code});
+        toast('Code sent to IB Gateway', title: 'IBKR login');
+      } catch (e) {
+        toast('$e', title: 'IBKR login', kind: 'error');
+      }
+      await trade.refreshStatus();
+    }
+
+    input.onKeyDown.listen((e) {
+      if (e.key == 'Enter') send();
+    });
+    return h('div', [
+      h('div.small', 'If you use IBKR Mobile, approve its notification. If you use an authenticator app, enter its '
+          'current code (IBKR waits 3 minutes, then asks again). Logging in here ends a session open in the IBKR app or TWS.'),
+      h('div.row', [
+        input,
+        h('button.btn.primary', 'Log in', {'type': 'button'}, {'click': (_) => send()}),
+      ], {'style': 'gap:8px;justify-content:center;margin-top:8px'}),
+    ]);
+  }
+
+  HTMLElement _gatewayChip(TStatus st) {
+    final state = st.gatewayState;
+    final running = state == 'running' || state == 'starting';
+    return h('div.tr-gw', [
+      h('span.badge.${state == 'running' ? 'up' : state == 'failed' ? 'down' : state == 'starting' ? 'info' : 'neutral'}',
+          'Gateway ${state == 'starting' ? 'starting…' : state}', {'data-tip': st.gateway['message'].s ?? ''}),
+      h('button.btn.small', running ? 'Stop' : 'Start', {
+        'type': 'button',
+        'data-tip': running ? 'Stop IB Gateway now (it also stops after ${st.gateway['idle_minutes'].i ?? 30} idle minutes)'
+            : 'Start IB Gateway in the cloud and log in to IBKR',
+      }, {'click': (_) => _gateway(running ? 'stop' : 'start')}),
+    ]);
+  }
+
+  HTMLElement _gatewayPanel(TStatus st) {
+    final state = st.gatewayState;
+    final live = st.gateway['mode'].s == 'live';
+    return h('div.empty-state.tall', [
+      if (state == 'starting') h('div.spinner') else icon('wallet', size: 28),
+      h('div', switch (state) {
+        'starting' => 'Logging in to IBKR…',
+        'running' => 'IB Gateway is up: connecting…',
+        'failed' => 'IB Gateway could not start',
+        _ => 'IB Gateway is not running',
+      }),
+      h('div.small', st.gateway['message'].s ?? ''),
+      if (state == 'starting' && st.gateway['awaiting_2fa'].b == true) _codeForm()
+      else if (state == 'starting' && live)
+        h('div.small', 'Approve the IBKR Mobile (IB Key) notification on your phone. Logging in here ends a session '
+            'open in the IBKR app or TWS.'),
+      if (state == 'stopped' || state == 'failed')
+        h('button.btn.primary', [icon('play', size: 14), 'Start IB Gateway'], {'type': 'button'},
+            {'click': (_) => _gateway('start')}),
+      h('div.muted.tiny', 'In the cloud IB Gateway runs only while you trade: it starts here or with the first order, '
+          'and stops after ${st.gateway['idle_minutes'].i ?? 30} idle minutes.'),
+    ]);
+  }
+
   void _renderHead() {
     final st = trade.status.value;
     final conn = st == null
@@ -103,6 +187,7 @@ class TradingPage {
     replace(_head, [
       h('h2', 'Trading'),
       conn,
+      if (st != null && st.gatewayManaged) _gatewayChip(st),
       h('button.btn.small', [icon('settings', size: 14), 'Connection'], {'type': 'button', 'aria-label': 'Broker connection'},
           {'click': (_) => _connectionDialog()}),
       h('span.spacer'),
@@ -143,7 +228,13 @@ class TradingPage {
     } else if (st != null && !st.connected) {
       replace(_banner, h('div.check-msg.warn', [
         h('b', '${st.brokerLabel} not connected. '),
-        st.kind == 'ibkr'
+        st.kind == 'ibkr' && st.gatewayManaged
+            ? switch (st.gatewayState) {
+                'starting' => st.gateway['message'].s ?? 'IB Gateway is logging in…',
+                'failed' => st.gateway['message'].s ?? 'IB Gateway failed to start.',
+                _ => 'IB Gateway runs in the cloud on demand: press Start (it also starts when the page needs account data).',
+              }
+            : st.kind == 'ibkr'
             ? 'Start IB Gateway (or TWS), log in to your paper account, and enable the API on port ${st.connection['port'].i ?? 4002} '
                 '(Configure → Settings → API: enable socket clients, trusted IP 127.0.0.1, uncheck Read-Only API). It reconnects automatically.'
             : (st.message ?? ''),
@@ -490,7 +581,7 @@ class TradingPage {
     final tab = _tab;
     final st = trade.status.value;
     if (tab != 'risk' && tab != 'proposals' && tab != 'activity' && st != null && !st.connected && tab != 'history' && tab != 'fills') {
-      replace(_body, h('div.empty-state', [h('div', 'Not connected'), h('div.small', st.message ?? '')]));
+      replace(_body, st.gatewayManaged ? _gatewayPanel(st) : h('div.empty-state', [h('div', 'Not connected'), h('div.small', st.message ?? '')]));
       return;
     }
     switch (tab) {

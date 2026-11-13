@@ -9,7 +9,7 @@ Agents can draw on the user's live chart; drawings, analyses, notes and watchlis
   `.mcp.json` registers it for Claude Code as `autobench`.
 - Skills in `.claude/skills/` define the research method: start with `stock-research`; it delegates to
   `technical-analysis`, `quant-validation`, `fundamental-analysis`, `trade-planning`, `trade-execution`, `chart-annotation`,
-  `earnings-preview`, `market-regime`, `watchlist-screening`, `recommendation-review`.
+  `earnings-preview`, `market-regime`, `watchlist-screening`, `recommendation-review`, `quant-research` (QBench).
 - Rule of the house: no edge without a test (`run_signal_study` / `run_backtest`), record every call with
   `save_analysis`, keep durable findings in `save_note`.
 
@@ -28,7 +28,11 @@ server/src/autobench/
                     watchlists, layouts, ui-state), events (bus), universe (all-US-stock layers:
                     listings, SEC-frame fundamentals, bar matrix, live quotes), screener (fields,
                     filters, expressions, heatmap, breadth), macro (FRED/Treasury/BLS, cross-asset,
-                    calendars), alerts, scheduler (background refresh + alert checks)
+                    calendars), alerts, scheduler (background refresh + alert checks),
+                    qbench/ (quant workstation: stats, strategy library + walk-forward lab, quant profile,
+                    factor ranks q_*, cross-sectional backtests, pairs, allocation/hedging, TA+FA+quant confluence)
+                    financier (Financier mode: serves its Flutter build at /financier/, reads its vral-altos
+                    Firestore data read-only for the links — bound Portfolio, L-Fund etc., risk plans)
   providers/reference.py  Nasdaq listings/calendars, Wikipedia S&P 500, SEC frames, FRED, Treasury, BLS
 server/tests/       pytest suite (fake provider, no network); live smoke tests: `pytest -m live`
 app/                Dart web UI compiled to JS with dart2js (only dependency: package:web)
@@ -37,7 +41,10 @@ app/                Dart web UI compiled to JS with dart2js (only dependency: pa
                     (one chart), chart_page.dart (toolbars, grid, shortcuts), drawing_ops.dart (undo)
   lib/src/ui/       app.dart (shell, routing, events), store.dart (state), kit/ (Obs, overlays, icons,
                     sparklines), panels/ (dock, watchlist, details, alerts, news, agent/notes/objects),
-                    pages/ (screener, heatmap, markets, calendar), pickers.dart, api.dart
+                    pages/ (screener, heatmap, markets, calendar, qbench/ = Quant Lab, Q-Signals, Arb & Hedge,
+                    Strategies; hidden unless the "Show QBench Controls" pref `qbench.on` is set), pickers.dart, api.dart
+                    financier_mode.dart (Mode selector → Financier: the Flutter console in an iframe, postMessage
+                    bridge: theme/navigate in, ready/route/openSymbol/openPage out; pref `mode`)
   static/           index.html, styles.css, favicon (copied into build/)
   tool/build.dart   build script; test/core_test.dart unit tests (plain `dart run`)
 ```
@@ -81,4 +88,19 @@ app/                Dart web UI compiled to JS with dart2js (only dependency: pa
   `AUTOBENCH_BROKER=sim` (conftest) — never point tests at a real Gateway. Trading writes require the
   `X-Autobench: 1` header and a loopback Host. The agent must never get tools to approve, change limits,
   arm live or resume.
+- Financier mode: Financier (tools/Financier, Flutter) is Autobench's second mode, in the same Firebase project
+  (`vral-altos`: Financier's data in `(default)`, Autobench's portfolio copy in `platform`). Build it with
+  `cd ../Financier/app && flutter build web --release --dart-define-from-file=.env`; Autobench serves that build
+  (`AUTOBENCH_FINANCIER_DIR`) with its base href rewritten. Its theme mirrors these CSS tokens
+  (`Financier/app/lib/ui/core/theme/app_theme.dart`): change both together. Tests stub the build and never
+  read the real Firestore (`AUTOBENCH_FIREBASE_PROJECT` is overridden in conftest).
+- **Cloud (production):** Autobench runs on Cloud Run (`deploy/deploy.sh`, Terraform in `Vral_Altos/infra/autobench.tf`).
+  State is in Firestore (`state_store.py`: SQLite is a working copy loaded at start, every commit written through;
+  caches `bars`/`bar_coverage`/`kv_cache`/`assets` are not state; a lease `autobench_meta/lease` stops a superseded
+  revision writing during rollouts). Unit tests run without a state project or lease. IB
+  Gateway runs in the container on demand (`services/broker/gateway.py`, IBC + Xvfb); Claude Code is in the
+  image, signed in with the subscription token from `claude-tokens` (`sk-ant-oat…`, auth method `oauth_token`; API
+  keys are refused). IAP admits only the owner and `iap.py` verifies its header; the in-container MCP uses a
+  per-process token. Credentials: `tool/set_autobench_credentials.sh` → Secret Manager `autobench-credentials`.
+  One-off state copy: `AUTOBENCH_STATE_PROJECT=vral-altos autobench state-upload --from <db> --yes`.
 - Config via `.env` at the repo root (see `.env.example`). Never commit `.env`.

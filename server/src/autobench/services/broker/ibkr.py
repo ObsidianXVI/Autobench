@@ -107,8 +107,10 @@ def map_fill(fill) -> dict:
     }
 
 
-def map_account(values: list, account: str, daily_pnl: float | None) -> dict:
-    """Account values arrive per tag and currency; report them in the account's base currency."""
+def map_account(values: list, account: str, daily_pnl: float | None, pnl=None) -> dict:
+    """Account values arrive per tag and currency; report them in the account's base currency. Logins with several
+    accounts often never finish the account download, so the P&L subscription (`pnl`, an ib_async PnL) fills
+    unrealized/realized P&L, and a missing USD exchange rate is None (the caller looks it up)."""
     by: dict[tuple[str, str], str] = {(v.tag, v.currency): v.value for v in values if v.account == account}
     base = next((cur for (tag, cur) in by if tag == "NetLiquidation" and cur not in ("", "BASE")), "USD")
 
@@ -118,13 +120,29 @@ def map_account(values: list, account: str, daily_pnl: float | None) -> dict:
                 return _num(by[(tag, cur)])
         return None
 
-    usd_to_base = 1.0 if base == "USD" else (_num(by.get(("ExchangeRate", "USD"))) or 1.0)
+    usd_to_base = 1.0 if base == "USD" else _num(by.get(("ExchangeRate", "USD")))
+    unrealized, realized = g("UnrealizedPnL"), g("RealizedPnL")
+    if pnl is not None:
+        unrealized = unrealized if unrealized is not None else _num(pnl.unrealizedPnL)
+        realized = realized if realized is not None else _num(pnl.realizedPnL)
     return {
         "account": account, "currency": base, "net_liquidation": g("NetLiquidation"), "cash": g("TotalCashValue"),
         "buying_power": g("BuyingPower"), "available_funds": g("AvailableFunds"),
-        "gross_position_value": g("GrossPositionValue"), "unrealized_pnl": g("UnrealizedPnL"),
-        "realized_pnl": g("RealizedPnL"), "daily_pnl": daily_pnl, "usd_to_base": usd_to_base,
+        "gross_position_value": g("GrossPositionValue"), "unrealized_pnl": unrealized,
+        "realized_pnl": realized, "daily_pnl": daily_pnl, "usd_to_base": usd_to_base,
     }
+
+
+def usd_rate(base: str) -> float | None:
+    """USD → base currency from the quote feed (Yahoo FX, e.g. USDSGD=X), for when IBKR sends no ExchangeRate."""
+    try:
+        from .. import market
+
+        price = market.get_quote(f"USD{base}=X").get("price")
+        return float(price) if price else None
+    except Exception as e:  # noqa: BLE001 — a missing rate must not break the account view
+        log.info("IBKR: no USD/%s rate (%s)", base, e)
+        return None
 
 
 def map_position(item) -> dict:
@@ -365,9 +383,13 @@ class IbkrBroker(Broker):
         def read():
             pnl = self.ib.pnl(self._account) if self._account else []
             daily = _num(pnl[0].dailyPnL) if pnl else None
-            return map_account(self.ib.accountValues(self._account or ""), self._account or "", daily)
+            return map_account(self.ib.accountValues(self._account or ""), self._account or "", daily,
+                               pnl[0] if pnl else None)
 
-        return self._call(read)
+        acct = self._call(read)
+        if acct["usd_to_base"] is None:  # looked up off the IB loop (a network call)
+            acct["usd_to_base"] = usd_rate(acct["currency"]) or 1.0
+        return acct
 
     def positions(self) -> list[dict]:
         self._require()

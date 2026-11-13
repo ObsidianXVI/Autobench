@@ -49,11 +49,38 @@ def _fake_claude(root: Path) -> dict:
     return {"AUTOBENCH_CLAUDE_HOME": str(root / "home"), "AUTOBENCH_CLAUDE_BIN": str(fake)}
 
 
+# A stand-in for Financier's Flutter build: speaks the same postMessage protocol (ready / route / openSymbol
+# out; theme / navigate in) and records what Autobench sent, so the Mode selector is tested without Flutter
+# or Firebase.
+FAKE_FINANCIER = """<!DOCTYPE html><html><head><base href="/"><meta charset="utf-8"><title>Financier</title></head>
+<body style="background:#0f1218;color:#dfe3eb"><h1 id="dest">overview</h1><div id="theme"></div>
+<button id="open" onclick="parent.postMessage({source:'financier',type:'openSymbol',symbol:'msft'},location.origin)">chart</button>
+<script>
+window.__got = [];
+const q = new URLSearchParams(location.search);
+document.getElementById('theme').textContent = q.get('theme');
+addEventListener('message', (e) => {
+  if (e.origin !== location.origin || !e.data || e.data.source !== 'autobench') return;
+  __got.push(e.data);
+  if (e.data.type === 'theme') document.getElementById('theme').textContent = e.data.brightness;
+  if (e.data.type === 'navigate') {
+    document.getElementById('dest').textContent = e.data.destination;
+    parent.postMessage({source:'financier',type:'route',destination:e.data.destination,section:e.data.section||0}, location.origin);
+  }
+});
+if (q.get('host') === 'autobench') parent.postMessage({source:'financier',type:'ready',destination:'overview'}, location.origin);
+</script></body></html>"""
+
+
 @pytest.fixture(scope="module")
 def server(tmp_path_factory):
     port = _free_port()
+    fin = tmp_path_factory.mktemp("financier")
+    (fin / "index.html").write_text(FAKE_FINANCIER)
     env = {**os.environ, "AUTOBENCH_BAR_PROVIDER": "fake", "ALPACA_API_KEY_ID": "", "ALPACA_API_SECRET_KEY": "",
            "AUTOBENCH_BACKGROUND": "1", "AUTOBENCH_BROKER": "sim", "AUTOBENCH_DB_PATH": str(tmp_path_factory.mktemp("ui") / "ui.db"),
+           "AUTOBENCH_FINANCIER_DIR": str(fin), "AUTOBENCH_FIREBASE_PROJECT": "autobench-e2e-none",
+           "AUTOBENCH_CLOUD_SYNC_PROJECT": "",
            **_fake_claude(tmp_path_factory.mktemp("claude"))}
     log = open(tmp_path_factory.mktemp("ui-log") / "server.log", "w")
     proc = subprocess.Popen([sys.executable, "-m", "autobench", "serve", "--port", str(port)], env=env,
@@ -1047,3 +1074,110 @@ def test_claude_system_prompt_editor_and_agent_updates(page, server):
                            ".then(p => p.text === 'Lead with the recommendation.' && p.updated_by === 'user')")
     page.click("button[aria-label='Close system prompt']")
     page.wait_for_selector(".cc-chat-box:not([hidden])")
+
+
+# ------------------------------------------------------------------------------- QBench
+
+
+def _qbench(page, on: bool):
+    if (page.locator(".page-tab.qb-tab").count() > 0) != on:
+        page.click("button[aria-label='QBench']")
+        page.get_by_text("Show QBench Controls").click()
+    page.wait_for_function(f"document.querySelectorAll('.page-tab.qb-tab').length === {4 if on else 0}")
+
+
+def test_qbench_hidden_by_default_toggle_pages_and_agent(page, server):
+    assert page.locator(".page-tab.qb-tab").count() == 0
+    assert page.locator(".rail-btn[aria-label^='Quant']").count() == 0
+    # the agent asks for a QBench page while it is hidden: the user is offered to show it
+    mcp_call(server, "show_in_ui", {"page": "qlab", "symbol": "AAPL"})
+    page.locator(".toast", has_text="QBench").get_by_role("button", name="Show QBench").click()
+    page.wait_for_selector(".qlab-page:not([hidden]) .qb-conf .qb-composite", timeout=20000)
+    assert page.locator(".qlab-page .qb-sym").inner_text().strip() == "AAPL"
+    assert page.locator(".page-tab.qb-tab").count() == 4
+    # an agent lab run refreshes the open Quant Lab
+    mcp_call(server, "run_strategy_lab", {"symbol": "AAPL", "strategies": ["ma_trend", "rsi2"]})
+    page.wait_for_selector(".qb-lab-table tbody tr", timeout=20000)
+    assert page.locator(".qb-lab-table tbody tr").count() == 2
+    page.locator(".qb-lab-table tbody tr").nth(1).click()
+    page.wait_for_selector(".qb-detail .qb-chart")
+    # the chart gets a Quant panel; the screener a QBench filter tab
+    page.locator(".page-tab", has_text="Chart").click()
+    page.click(".rail-btn[aria-label^='Quant']")
+    page.wait_for_selector(".qb-panel .qb-composite", timeout=20000)
+    page.locator(".page-tab", has_text="Screener").click()
+    page.wait_for_function("document.querySelector('.screener-page:not([hidden]) .scr-tabs')?.textContent.includes('QBench')",
+                           timeout=15000)
+    page.locator(".page-tab.qb-tab[aria-label='Strategies']").click()
+    page.wait_for_selector(".qb-strat")
+    assert page.locator(".qb-strat").count() >= 20
+    # hiding QBench leaves its page and removes its controls
+    page.locator(".page-tab.qb-tab[aria-label='Q-Signals']").click()
+    _qbench(page, False)
+    assert page.evaluate("location.hash") == "#chart"
+    assert page.locator(".rail-btn[aria-label^='Quant']").count() == 0
+    page.locator(".page-tab", has_text="Screener").click()
+    page.wait_for_function("location.hash === '#screener' && !document.querySelector('.screener-page[hidden]')")
+    page.wait_for_function("!document.querySelector('.screener-page .scr-tabs').textContent.includes('QBench')")
+
+
+def _fin_frame(page):
+    page.wait_for_selector("iframe.fin-frame", timeout=10000)
+    frame = page.frame_locator("iframe.fin-frame")
+    page.wait_for_function("document.querySelector('iframe.fin-frame').contentWindow.__got !== undefined", timeout=10000)
+    return frame
+
+
+def test_mode_selector_switches_to_financier_and_links_back(page, server):
+    assert page.locator(".mode-btn b").inner_text() == "Autobench"
+    page.click(".mode-btn")
+    page.locator(".menu-item", has_text="Financier").first.click()
+    frame = _fin_frame(page)
+    page.wait_for_function("location.hash === '#financier'")
+    assert page.locator(".mode-btn b").inner_text() == "Financier"
+    assert page.locator(".page-tab").count() == 0  # Autobench's own tabs make way
+    assert page.locator(".chart-page").is_hidden()
+    # the frame gets the theme in its URL and again by message once it is ready
+    page.wait_for_function("document.querySelector('iframe.fin-frame').contentWindow.__got.some(m => m.type === 'theme')")
+    assert frame.locator("#theme").inner_text() == "dark"
+    # Autobench's theme follows into Financier
+    page.click("button[aria-label=Theme]")
+    page.locator(".menu-item", has_text="Light").first.click()
+    page.wait_for_function("document.querySelector('iframe.fin-frame').contentWindow.document.getElementById('theme').textContent === 'light'")
+    # the Mode menu lists Financier's pages and opens them; the route comes back and is remembered
+    page.click(".mode-btn")
+    page.locator(".menu-item", has_text="Portfolio").first.click()
+    page.wait_for_function("document.querySelector('iframe.fin-frame').contentWindow.document.getElementById('dest').textContent === 'portfolio'")
+    # a message that does not come from the frame is ignored
+    page.evaluate("postMessage({source:'financier',type:'openSymbol',symbol:'AMD'}, location.origin)")
+    page.wait_for_timeout(300)
+    assert page.locator(".mode-btn b").inner_text() == "Financier"
+    # Financier asks for a chart: Autobench switches back with that symbol
+    frame.locator("#open").click()
+    page.wait_for_function("document.querySelector('.mode-btn b').textContent === 'Autobench'")
+    page.wait_for_function("location.hash === '#chart'")
+    assert page.locator(".chart-page").is_visible()
+    for _ in range(50):  # the UI shares the active chart's symbol as the view
+        if httpx.get(f"{server}/api/view").json()["symbol"] == "MSFT":
+            break
+        time.sleep(0.1)
+    assert httpx.get(f"{server}/api/view").json()["symbol"] == "MSFT"
+    # a reload on #financier/<page> reopens Financier on that page
+    page.goto(f"{server}/?r=1#financier/hindsight")
+    frame = _fin_frame(page)
+    page.wait_for_function("document.querySelector('iframe.fin-frame').contentWindow.document.getElementById('dest').textContent === 'hindsight'")
+
+
+def test_agent_opens_financier_and_portfolio_shows_the_link(page, server):
+    mcp_call(server, "show_in_ui", {"page": "financier", "tab": "foresight"})
+    _fin_frame(page)
+    page.wait_for_function("document.querySelector('iframe.fin-frame').contentWindow.document.getElementById('dest').textContent === 'foresight'")
+    # an Autobench page from the agent switches the mode back
+    mcp_call(server, "show_in_ui", {"page": "portfolio"})
+    page.wait_for_function("document.querySelector('.mode-btn b').textContent === 'Autobench'")
+    # the Portfolio page carries the Financier section; without Firestore access it says why, not an empty card
+    page.wait_for_selector(".fin-link .error", timeout=20000)
+    assert "Firestore" in page.locator(".fin-link").inner_text() or "Google" in page.locator(".fin-link").inner_text()
+    page.locator(".fin-link").get_by_role("button", name="Open in Financier").click()
+    _fin_frame(page)
+    page.wait_for_function("document.querySelector('iframe.fin-frame').contentWindow.document.getElementById('dest').textContent === 'portfolio'")

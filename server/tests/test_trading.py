@@ -322,6 +322,12 @@ def test_ibkr_mapping():
     a = map_account(vals, "DU1", -20.0)
     assert a["currency"] == "SGD" and a["net_liquidation"] == 135000 and a["usd_to_base"] == 1.35
     assert a["unrealized_pnl"] == 12 and a["daily_pnl"] == -20
+    # a multi-account login whose account download never finished: P&L from the PnL subscription, no FX rate
+    from ib_async import PnL
+
+    partial = [AccountValue("U1", "NetLiquidation", "25000", "SGD", "")]
+    b = map_account(partial, "U1", -30.0, PnL(account="U1", dailyPnL=-30.0, unrealizedPnL=-770.5, realizedPnL=12.0))
+    assert b["unrealized_pnl"] == -770.5 and b["realized_pnl"] == 12.0 and b["usd_to_base"] is None
 
 
 def test_user_exit_orders_are_tagged_and_cleaned_up(client):

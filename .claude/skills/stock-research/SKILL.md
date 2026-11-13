@@ -39,6 +39,9 @@ Translate the 1-3 claims your call depends on into expressions and test them on 
 - `run_backtest` if you propose a concrete entry/exit rule.
 Report sample size, mean vs baseline, win rate, t-stat, out-of-sample. A claim that fails the test
 is dropped or explicitly downgraded — never silently kept.
+When QBench is in use (the user asks for quant input, or the stock's call depends on a systematic
+edge), add the `quant-research` skill's steps 2-5: regime, strategy lab survivors, factor ranks and
+`get_quant_confluence`; report them as a separate "Quant" section.
 
 ## 4. Fundamentals → `fundamental-analysis` skill
 Depth scales with horizon: swing = valuation snapshot, earnings trend, revisions, red flags;

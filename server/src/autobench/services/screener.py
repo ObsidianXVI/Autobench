@@ -152,6 +152,20 @@ FIELDS: list[Field] = [
         *[{"label": f"Down {v}+ days", "op": "<=", "value": -v} for v in (3, 5, 7)]]),
     Field("high_52w", "52W High", "Technical", "price"),
     Field("low_52w", "52W Low", "Technical", "price"),
+    # QBench: cross-sectional factor percentile ranks (0-100) among eligible stocks; see qbench/factors.py
+    *[Field(k, label, "QBench", "num", desc, [
+        {"label": "Top decile (≥ 90)", "op": ">=", "value": 90}, {"label": "Top quintile (≥ 80)", "op": ">=", "value": 80},
+        {"label": "Above median", "op": ">=", "value": 50}, {"label": "Bottom quintile (≤ 20)", "op": "<=", "value": 20}])
+      for k, label, desc in [
+        ("q_score", "Q-Score", "QBench composite factor rank (value, quality, growth, momentum, low vol)"),
+        ("q_value", "Q Value", "Rank of earnings, FCF, book and sales yield"),
+        ("q_quality", "Q Quality", "Rank of ROE, ROA, margins and low leverage"),
+        ("q_growth", "Q Growth", "Rank of sales/EPS growth"),
+        ("q_momentum", "Q Momentum", "Rank of 12-1 month return and nearness to the 52-week high"),
+        ("q_lowvol", "Q Low Vol", "Rank of low 1-year volatility and low beta")]],
+    Field("mom_12_1", "Mom 12-1", "QBench", "pct", "Return from 12 months to 1 month ago", _pct_presets([0, 10, 25, 50])),
+    Field("volatility_1y", "Volatility Y", "QBench", "pct", "1-year annualised volatility of daily returns",
+          _under_over([20, 30, 50, 80], "%")),
 ]
 FIELD_MAP = {f.key: f for f in FIELDS}
 
@@ -163,6 +177,8 @@ VIEWS = {
                   "roe", "roa", "debt_eq", "current_ratio", "sales_qoq", "eps_qoq", "fcf", "price", "change_pct"],
     "performance": ["symbol", "perf_1w", "perf_1m", "perf_3m", "perf_6m", "perf_ytd", "perf_1y", "volatility_1m",
                     "rel_volume", "avg_volume", "price", "change_pct", "volume"],
+    "qbench": ["symbol", "name", "sector", "market_cap", "q_score", "q_value", "q_quality", "q_growth", "q_momentum",
+               "q_lowvol", "mom_12_1", "volatility_1y", "price", "change_pct"],
     "technical": ["symbol", "beta", "atr_pct", "sma20_pct", "sma50_pct", "sma200_pct", "from_high_52w", "from_low_52w",
                   "rsi14", "gap_pct", "change_from_open", "streak", "price", "change_pct", "volume"],
 }

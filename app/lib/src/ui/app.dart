@@ -15,6 +15,7 @@ import '../core/models.dart';
 import 'api.dart';
 import 'dom.dart';
 import 'events.dart';
+import 'financier_mode.dart';
 import 'inbox.dart';
 import 'kit/icons.dart';
 import 'kit/overlay.dart';
@@ -25,6 +26,11 @@ import 'quick_chat.dart';
 import 'pages/heatmap.dart';
 import 'pages/journal.dart';
 import 'pages/portfolio.dart';
+import 'pages/qbench/arb.dart';
+import 'pages/qbench/common.dart';
+import 'pages/qbench/library.dart';
+import 'pages/qbench/quant_lab.dart';
+import 'pages/qbench/signals.dart';
 import 'pages/markets.dart';
 import 'pages/screener.dart';
 import 'pages/trading.dart';
@@ -61,6 +67,10 @@ class App {
   bool _firstHello = true;
   final Set<String> _toastedEvents = {}; // inbox entries already shown as a toast in this tab
   final _viewSync = Debouncer(400);
+  bool _qbench = false; // last seen 'Show QBench Controls'
+  bool _financier = false; // last seen Mode == Financier
+  late final FinancierFrame _fin;
+  bool get _finCreated => _pageRoots.containsKey('chart'); // _fin is created with the chart page
 
   App(this.mount);
 
@@ -75,6 +85,22 @@ class App {
     chartPage = ChartPage(dock.root);
     _pageRoots['chart'] = chartPage.root;
     _pageObjects['chart'] = chartPage;
+    _fin = FinancierFrame(onOpenSymbol: (sym) {
+      store.activeChart.symbol.value = sym;
+      store.page.value = 'chart';
+      setMode('autobench');
+    }, onOpenPage: (page, tab) {
+      if (!pages.any((p) => p.$1 == page)) return;
+      if (tab != null) store.setPref('$page.tab', tab);
+      store.page.value = page;
+      setMode('autobench');
+      final po = _pageObjects[page];
+      if (tab != null && po is TradingPage) po.selectTab(tab);
+      if (tab != null && po is PortfolioPage) po.selectTab(tab);
+    });
+    if (fromHash != null) store.setPref('mode', 'autobench'); // #chart etc. open Autobench
+    _modeFromHash();
+    _financier = financierMode;
     replace(mount, h('div.app', [_nav, _pages]));
     _scope.listen(store.page, (_) => _showPage(), now: true);
     _scope.listen(store.theme, (_) => _applyTheme());
@@ -84,10 +110,25 @@ class App {
     _scope.listen(store.inboxUnread, (_) => _renderNav());
     _scope.listen(trade.status, (_) => _renderNav());
     _scope.listen(trade.pending, (_) => _renderNav());
+    _qbench = qbenchOn;
+    _scope.listen(store.prefs, (_) {
+      if (financierMode != _financier) {
+        _financier = financierMode;
+        _showPage();
+      }
+      if (qbenchOn == _qbench) return;
+      _qbench = qbenchOn;
+      if (!_qbench && isQbenchPage(store.page.value)) store.page.value = 'chart';
+      _renderNav();
+    });
     trade.start();
     window.addEventListener('hashchange', ((Event _) {
       final p = _pageFromHash();
-      if (p != null) store.page.value = p;
+      if (p != null) {
+        store.page.value = p;
+        if (financierMode) setMode('autobench');
+      }
+      _modeFromHash();
     }).toJS);
     window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', ((Event _) => _applyTheme()).toJS);
     window.addEventListener('create-alert', ((CustomEvent e) {
@@ -140,12 +181,17 @@ class App {
 
   /// What the user has open, sent with quick-chat messages so Claude knows what "this" refers to.
   Map<String, Object?> _viewContext() {
+    if (financierMode) return {..._fin.agentContext(), 'page': 'financier'};
     final page = store.page.value;
     String p(String key) => store.pref<Object?>(key)?.toString() ?? '';
     final detail = switch (_pageObjects[page]) {
       ChartPage c => c.agentContext(),
       ScreenerPage s => s.agentContext(),
       PortfolioPage pf => pf.agentContext(),
+      QuantLabPage q => q.agentContext(),
+      QSignalsPage q => q.agentContext(),
+      QArbPage q => q.agentContext(),
+      QLibPage q => q.agentContext(),
       _ => switch (page) {
           'heatmap' => {...store.heatmapState.value},
           'trading' => {'account': ?trade.status.value?.account, 'tab': p('trading.tab')},
@@ -158,12 +204,74 @@ class App {
     return {...detail, 'page': page};
   }
 
+  /// `#financier` or `#financier/<page>` switches to Financier mode.
+  void _modeFromHash() {
+    final parts = window.location.hash.replaceFirst('#', '').split('/');
+    if (parts.first != 'financier') return;
+    final dest = parts.length > 1 && financierPages.any((p) => p.$1 == parts[1]) ? parts[1] : null;
+    if (dest != null) store.setPref('financier.destination', dest);
+    setMode('financier');
+    if (dest != null && financierMode) _fin.navigate(dest);
+  }
+
   String? _pageFromHash() {
     final hash = window.location.hash.replaceFirst('#', '').split('/').first;
+    if (isQbenchPage(hash)) return qbenchOn ? hash : null;
     return pages.any((p) => p.$1 == hash) ? hash : null;
   }
 
+  void _toggleQbench() {
+    store.setPref('qbench.on', !qbenchOn);
+    toast(qbenchOn ? 'Quant Lab, Q-Signals, Arb & Hedge and Strategies are in the top bar; the chart gets a Quant panel and '
+            'the screener QBench factor fields.' : 'QBench pages and controls are hidden.',
+        title: qbenchOn ? 'QBench controls shown' : 'QBench controls hidden', ms: 5000);
+  }
+
+  HTMLElement _qbenchBtn() => h('button.nav-btn${qbenchOn ? '.qb-on' : ''}', icon('sigma', size: 17), {
+        'type': 'button',
+        'data-tip': 'QBench: quant workstation',
+        'aria-label': 'QBench',
+      }, {
+        'click': (e) => showMenu([
+              MenuItem('Show QBench Controls', checked: qbenchOn, onSelect: _toggleQbench,
+                  hint: 'Quant pages, the chart Quant panel and factor fields in the screener'),
+              if (qbenchOn) ...[
+                const MenuItem.divider(),
+                for (final (key, label, ic) in qbenchPages)
+                  MenuItem(label, iconName: ic, onSelect: () => store.page.value = key),
+              ],
+            ], anchor: e.currentTarget as Element, align: 'end'),
+      });
+
   // ---------------------------------------------------------------- navigation
+
+  /// The Mode selector: Autobench (this workbench) or Financier (the finance console).
+  HTMLElement _modeSelect() {
+    final fin = financierMode;
+    return h('button.mode-btn${fin ? '.fin' : ''}', [
+      h('img', null, {'src': 'favicon.svg', 'alt': '', 'width': '20', 'height': '20'}),
+      h('span.mode-label', [h('span.mode-k', 'Mode'), h('b', fin ? 'Financier' : 'Autobench')]),
+      icon('chev-down', size: 14),
+    ], {
+      'type': 'button',
+      'aria-label': 'Mode: ${fin ? 'Financier' : 'Autobench'}',
+      'aria-haspopup': 'menu',
+      'data-tip': 'Mode',
+      'data-tip-pos': 'bottom',
+    }, {
+      'click': (e) => showMenu([
+            MenuItem('Autobench', iconName: 'candles', checked: !fin, onSelect: () => setMode('autobench'),
+                hint: 'Charts, research, trading'),
+            MenuItem('Financier', iconName: 'wallet', checked: fin, onSelect: () => setMode('financier'),
+                hint: 'Accounts, budgets, forecasts'),
+            if (fin) ...[
+              const MenuItem.divider(),
+              for (final (k, label) in financierPages)
+                MenuItem(label, checked: _fin.destination == k, onSelect: () => _fin.navigate(k)),
+            ],
+          ], anchor: e.currentTarget as Element),
+    });
+  }
 
   void _renderNav() {
     final current = store.page.value;
@@ -171,16 +279,52 @@ class App {
     final active = store.alerts.value.where((a) => a.status == 'active').length;
     final unread = store.inboxUnread.value;
     final st = store.status.value;
+    // with QBench on there are 13 tabs: inactive ones collapse to icons (+ tooltip) on narrower screens (CSS)
+    _nav.classList.toggle('qb', qbenchOn && !financierMode);
+    _nav.classList.toggle('fin', financierMode);
+    if (financierMode) {
+      replace(_nav, [
+        _modeSelect(),
+        h('span.spacer'),
+        h('button.nav-btn', icon('bot', size: 17), {
+          'type': 'button',
+          'data-tip': 'Ask Claude about what is on screen (⌘K)',
+          'aria-label': 'Quick chat with Claude',
+        }, {
+          'click': (_) => quickChat.toggle(),
+        }),
+        h('button.nav-btn.inbox-btn', [icon('inbox', size: 17), if (unread > 0) h('span.nav-badge', unread > 99 ? '99+' : '$unread')], {
+          'type': 'button',
+          'data-tip': unread > 0 ? '$unread unread alert${unread == 1 ? '' : 's'}' : 'Inbox: alerts that fired',
+          'aria-label': 'Inbox',
+        }, {
+          'click': (e) => toggleInbox(e.currentTarget as Element),
+        }),
+        _themeBtn(),
+      ]);
+      return;
+    }
     replace(_nav, [
-      h('a.brand', [h('img', null, {'src': 'favicon.svg', 'alt': '', 'width': '22', 'height': '22'}), h('span', 'Autobench')],
-          {'href': '#chart'}),
+      _modeSelect(),
       h('nav.page-tabs', [
         for (final (key, label, ic) in pages)
-          h('a.page-tab${key == current ? '.on' : ''}', [icon(ic, size: 16), h('span', label)],
-              {'href': '#$key', 'aria-current': key == current ? 'page' : 'false'}),
+          h('a.page-tab${key == current ? '.on' : ''}', [icon(ic, size: 16), h('span', label)], {
+            'href': '#$key',
+            'aria-current': key == current ? 'page' : 'false',
+            if (qbenchOn) 'data-tip': label,
+            if (qbenchOn) 'data-tip-pos': 'bottom',
+          }),
+        if (qbenchOn) ...[
+          h('span.qb-nav-sep', 'QBench', {'aria-hidden': 'true'}),
+          for (final (key, label, ic) in qbenchPages)
+            h('a.page-tab.qb-tab${key == current ? '.on' : ''}', [icon(ic, size: 16), h('span', label)],
+                {'href': '#$key', 'aria-current': key == current ? 'page' : 'false', 'data-tip': label, 'data-tip-pos': 'bottom',
+                  'aria-label': label}),
+        ],
       ]),
       h('span.spacer'),
       _tradeNav(),
+      _qbenchBtn(),
       h('button.nav-btn', icon('bot', size: 17), {
         'type': 'button',
         'data-tip': 'Ask Claude about what is on screen (⌘K)',
@@ -205,15 +349,7 @@ class App {
           store.panel.value = 'alerts';
         },
       }),
-      h('button.nav-btn', icon(_themeIcon, size: 17), {'type': 'button', 'data-tip': 'Theme: ${store.theme.value}', 'aria-label': 'Theme'}, {
-        'click': (e) => showMenu([
-              for (final (k, label) in [('system', 'System'), ('dark', 'Dark'), ('light', 'Light')])
-                MenuItem(label, checked: store.theme.value == k, onSelect: () {
-                  store.theme.value = k;
-                  store.save();
-                }),
-            ], anchor: e.currentTarget as Element, align: 'end'),
-      }),
+      _themeBtn(),
       h('button.nav-btn', icon('keyboard', size: 17),
           {'type': 'button', 'data-tip': 'Keyboard shortcuts (?)', 'aria-label': 'Shortcuts'}, {'click': (_) => showShortcuts()}),
       h('div.conn', [
@@ -247,10 +383,41 @@ class App {
     });
   }
 
+  HTMLElement _themeBtn() =>
+      h('button.nav-btn', icon(_themeIcon, size: 17), {'type': 'button', 'data-tip': 'Theme: ${store.theme.value}', 'aria-label': 'Theme'}, {
+        'click': (e) => showMenu([
+              for (final (k, label) in [('system', 'System'), ('dark', 'Dark'), ('light', 'Light')])
+                MenuItem(label, checked: store.theme.value == k, onSelect: () {
+                  store.theme.value = k;
+                  store.save();
+                }),
+            ], anchor: e.currentTarget as Element, align: 'end'),
+      });
+
   String get _themeIcon => store.theme.value == 'light' ? 'sun' : store.theme.value == 'dark' ? 'moon' : 'settings';
 
+  bool get _dark => document.documentElement!.getAttribute('data-theme') != 'light';
+
   void _showPage() {
+    document.body!.classList.toggle('fin-mode', financierMode);
+    if (financierMode) {
+      if (!window.location.hash.startsWith('#financier')) window.history.replaceState(null, '', '#financier');
+      if (!_pages.contains(_fin.root)) _pages.append(_fin.root);
+      for (final e in _pageRoots.values) {
+        e.isHidden = true;
+      }
+      _fin.root.isHidden = false;
+      _fin.onShow(dark: _dark);
+      _renderNav();
+      store.save();
+      return;
+    }
+    _fin.root.isHidden = true;
     final key = store.page.value;
+    if (isQbenchPage(key) && !qbenchOn) {
+      store.page.value = 'chart';
+      return;
+    }
     if (_pageFromHash() != key) window.history.replaceState(null, '', '#$key');
     _pageRoots.putIfAbsent(key, () => _createPage(key));
     for (final e in _pageRoots.entries) {
@@ -273,6 +440,14 @@ class App {
       case PortfolioPage p:
         p.onShow();
       case ClaudePage p:
+        p.onShow();
+      case QuantLabPage p:
+        p.onShow();
+      case QSignalsPage p:
+        p.onShow();
+      case QArbPage p:
+        p.onShow();
+      case QLibPage p:
         p.onShow();
       case ChartPage p:
         for (final panel in p.panels) {
@@ -317,6 +492,22 @@ class App {
         final p = ClaudePage();
         _pageObjects[key] = p;
         return p.root;
+      case 'qlab':
+        final p = QuantLabPage();
+        _pageObjects[key] = p;
+        return p.root;
+      case 'qsignals':
+        final p = QSignalsPage();
+        _pageObjects[key] = p;
+        return p.root;
+      case 'qarb':
+        final p = QArbPage();
+        _pageObjects[key] = p;
+        return p.root;
+      case 'qlib':
+        final p = QLibPage();
+        _pageObjects[key] = p;
+        return p.root;
       default:
         return chartPage.root;
     }
@@ -327,6 +518,7 @@ class App {
     final prefersLight = window.matchMedia('(prefers-color-scheme: light)').matches;
     final dark = t == 'dark' || (t == 'system' && !prefersLight);
     document.documentElement!.setAttribute('data-theme', dark ? 'dark' : 'light');
+    if (_finCreated) _fin.setTheme(dark);
     // canvases read their colors from CSS variables
     Timer.run(() {
       for (final p in chartPage.panels) {
@@ -524,6 +716,15 @@ class App {
         if (d['unread'].i != store.inboxUnread.value) store.loadInbox();
       case 'ui.navigate':
         final page = d['page'].s;
+        if (page == 'financier') {
+          final dest = d['tab'].s;
+          final known = dest != null && financierPages.any((p) => p.$1 == dest);
+          setMode('financier', destination: known ? dest : null);
+          if (known) _fin.navigate(dest);
+          _pushActivity('Opened Financier${known ? ' · $dest' : ''} for you', 'agent', null);
+          return;
+        }
+        if (page != null && financierMode) setMode('autobench');
         if (page == 'chart' && d['symbol'].s != null) store.activeChart.symbol.value = d['symbol'].s!;
         if (page == 'screener' && d['screen'].v is Map) {
           store.screenerState.value = Map<String, Object?>.from(d['screen'].v as Map);
@@ -531,7 +732,26 @@ class App {
         if (page == 'heatmap' && d['period'].s != null) {
           store.heatmapState.value = {...store.heatmapState.value, 'period': d['period'].s};
         }
-        if (page != null && pages.any((p) => p.$1 == page)) store.page.value = page;
+        if (page != null && isQbenchPage(page)) {
+          void go() {
+            if (page == 'qlab' && d['symbol'].s != null) store.setPref('qbench.symbol', d['symbol'].s!);
+            store.page.value = page;
+            final po = _pageObjects[page];
+            if (po is QuantLabPage && d['symbol'].s != null) po.showSymbol(d['symbol'].s!);
+          }
+
+          if (qbenchOn) {
+            go();
+          } else {
+            toast('The agent wants to show you a QBench page.', title: '✦ QBench', kind: 'alert', ms: 12000,
+                actionLabel: 'Show QBench', onAction: () {
+              store.setPref('qbench.on', true);
+              go();
+            });
+          }
+        } else if (page != null && pages.any((p) => p.$1 == page)) {
+          store.page.value = page;
+        }
         if (d['watchlist'].s != null) store.watchlist.value = d['watchlist'].s!;
         if (page == 'chart' && d['panel'].s != null) store.panel.value = d['panel'].s;
         final tab = d['tab'].s;
@@ -543,6 +763,12 @@ class App {
             po.selectTab(tab);
           } else if (po is PortfolioPage) {
             po.selectTab(tab);
+          } else if (po is QSignalsPage) {
+            po.selectTab(tab);
+          } else if (po is QArbPage) {
+            po.selectTab(tab);
+          } else if (page == 'qsignals' || page == 'qarb') {
+            store.setPref(page == 'qsignals' ? 'qbench.signalsTab' : 'qbench.arbTab', tab);
           } else if (page == 'journal' || page == 'portfolio' || page == 'trading') {
             store.setPref('$page.tab', tab);
           }
@@ -560,6 +786,18 @@ class App {
         if (sym != null) {
           store.reloadConfig(sym);
           if (d['author'].s == 'agent') _pushActivity(d['what'].s ?? 'Changed the chart', 'agent', sym);
+        }
+      case 'qbench.lab':
+        final sym = d['symbol'].s ?? '';
+        final ql = _pageObjects['qlab'];
+        if (ql is QuantLabPage) ql.onLabEvent(sym);
+        dock.onLabEvent(sym);
+        if (d['author'].s == 'agent') {
+          _pushActivity('Ran the Strategy Lab on $sym${d['best'].s != null ? ' (best: ${d['best'].s})' : ''}', 'agent', sym);
+          if (qbenchOn) {
+            toast('Best: ${d['best'].s ?? 'no strategy beat data-mining odds'}', title: '✦ Strategy Lab · $sym', ms: 7000,
+                actionLabel: 'Open', onAction: () => openQuantLab(sym));
+          }
         }
       case 'screens.updated':
         final s = _pageObjects['screener'];

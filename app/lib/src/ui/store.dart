@@ -137,6 +137,33 @@ const prefDefaults = <String, Object?>{
   'trading.equityDays': 90,
   // indicator name -> {params, styles, levels}: the last settings applied to it, used for new instances
   'ind.defaults': <String, Object?>{},
+  // Mode selector: 'autobench' (charting/trading workbench) or 'financier' (the finance console, framed)
+  'mode': 'autobench',
+  'financier.destination': 'overview', // Financier page last shown (its AppDestination name)
+  'financier.section': 0,
+  // QBench (quant workstation): hidden unless 'Show QBench Controls' is on
+  'qbench.on': false,
+  'qbench.symbol': '', // Quant Lab symbol ('' = the active chart's)
+  'qbench.labLookback': '15y',
+  'qbench.costBps': 5.0,
+  'qbench.signalsTab': 'rank',
+  'qbench.watchlist': '', // '' = the watchlist panel's current list
+  'qbench.weights': <String, Object?>{}, // factor weights override
+  'qbench.universe': 'all',
+  'qbench.sectorNeutral': false,
+  'qbench.xsFactor': 'momentum_12_1',
+  'qbench.xsTopK': 5.0,
+  'qbench.arbTab': 'pairs',
+  'qbench.pairSymbols': '',
+  'qbench.minCorr': 0.6,
+  'qbench.hedgePositions': '',
+  'qbench.hedgeInstruments': 'SPY',
+  'qbench.allocSymbols': '',
+  'qbench.allocMethod': 'risk_parity',
+  'qbench.allocCap': '0',
+  'qbench.allocCapital': '',
+  'qbench.libFamily': '',
+  'qbench.libFocus': '',
 };
 
 class Store {

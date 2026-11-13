@@ -182,7 +182,7 @@ def test_the_agent_does_not_get_this_apps_environment(claude, client, tmp_path, 
     assert not [k for k in env if k.startswith(("AUTOBENCH_", "ALPACA_", "ANTHROPIC_"))]
 
 
-@pytest.mark.parametrize("method", ["none", "api_key"])
+@pytest.mark.parametrize("method", ["none", "api_key", "apiKeyHelper"])
 def test_only_runs_on_the_claude_ai_login(claude, client, monkeypatch, method):
     monkeypatch.setenv("FAKE_CLAUDE_AUTH", method)
     st = client.get("/api/claude/status", headers=H).json()
@@ -191,6 +191,19 @@ def test_only_runs_on_the_claude_ai_login(claude, client, monkeypatch, method):
     r = client.post(f"/api/claude/sessions/{SID}/messages", json={"text": "hi"}, headers=H)
     assert r.status_code == 403 and r.json()["code"] == "auth"
     assert not [c for c in _calls(claude) if "-p" in c["args"]]
+
+
+def test_runs_on_the_subscription_token(claude, client, monkeypatch):
+    """The cloud signs in with the `claude setup-token` token: authMethod oauth_token, no API key."""
+    monkeypatch.setenv("FAKE_CLAUDE_AUTH", "oauth_token")
+    assert client.get("/api/claude/status", headers=H).json()["auth"]["ok"] is True
+
+
+def test_refuses_a_token_entry_that_is_an_api_key(tmp_path, monkeypatch):
+    f = tmp_path / "tokens.json"
+    f.write_text(json.dumps({"good": "sk-ant-oat01-abc", "bad": "sk-ant-api03-abc"}))
+    assert claude_code._account_token("good", str(f)) == "sk-ant-oat01-abc"
+    assert claude_code._account_token("bad", str(f)) is None
 
 
 def test_rejects_a_second_message_while_busy(claude, client):
@@ -312,3 +325,25 @@ def test_system_prompt_is_edited_versioned_and_appended_to_runs(claude, client):
     assert p["updated_by"] == "agent" and p["note"] == "User asked for stops"
     assert [v["text"] for v in p["history"]] == ["Lead with the recommendation."] and p["history"][0]["by"] == "user"
     assert client.put("/api/claude/system-prompt", json={"text": "x" * (claude_code.PROMPT_MAX + 1)}, headers=H).status_code == 400
+
+
+def test_cloud_account_token_and_home_reach_claude_but_secrets_do_not(tmp_path, monkeypatch):
+    import json as _json
+
+    from autobench.config import get_settings
+    from autobench.services import claude_code
+
+    tokens = tmp_path / "tokens.json"
+    tokens.write_text(_json.dumps({"pers": "sk-ant-oat01-123", "other": "x"}))
+    monkeypatch.setenv("AUTOBENCH_CLAUDE_TOKEN_REF", "pers")
+    monkeypatch.setenv("AUTOBENCH_CLAUDE_TOKENS_FILE", str(tokens))
+    monkeypatch.setenv("IBKR_PASSWORD", "s3cret")
+    monkeypatch.setenv("ALPACA_API_SECRET_KEY", "k")
+    get_settings.cache_clear()
+    env = claude_code._env()
+    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-123"
+    assert env["CLAUDE_CONFIG_DIR"] == str(claude_code.home())
+    assert "IBKR_PASSWORD" not in env and "ALPACA_API_SECRET_KEY" not in env
+    monkeypatch.setenv("AUTOBENCH_CLAUDE_TOKEN_REF", "missing")
+    get_settings.cache_clear()
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in claude_code._env()

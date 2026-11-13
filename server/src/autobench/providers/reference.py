@@ -1,14 +1,19 @@
 """Reference data for the whole market: listings (Nasdaq), index membership (Wikipedia),
 cross-sectional fundamentals (SEC XBRL frames), macro series (FRED) and event calendars (Nasdaq).
 
-All of these are public endpoints without keys. Nasdaq's API expects a browser-like request."""
+All of these are public endpoints without keys. Nasdaq's API expects a browser-like request, and from cloud networks
+(Cloud Run) it refuses Python's TLS client outright: those requests are retried with `curl`, which it accepts. FRED,
+the other way round, stalls clients that claim to be a browser and serves an honest user agent."""
 
 from __future__ import annotations
 
 import io
 import logging
 import re
+import shutil
+import subprocess
 import time
+import zipfile
 from datetime import date
 from typing import Any
 
@@ -34,6 +39,10 @@ def _get(url: str, params: dict | None = None, headers: dict | None = None, atte
             r = _client.get(url, params=params, headers=headers or _BROWSER)
             if r.status_code == 200:
                 return r
+            if r.status_code == 403 and url.startswith(_CURL_FALLBACK):
+                c = _curl(url, params, headers or _BROWSER)
+                if c is not None:
+                    return c
             if r.status_code in (429, 500, 502, 503, 504) and i < attempts - 1:
                 time.sleep(1.5 * (i + 1))
                 continue
@@ -43,6 +52,31 @@ def _get(url: str, params: dict | None = None, headers: dict | None = None, atte
                 raise ProviderError(f"request to {url} failed: {e}") from e
             time.sleep(1.5 * (i + 1))
     raise ProviderError(f"request to {url} failed")
+
+
+_CURL_FALLBACK = ("https://api.nasdaq.com/",)
+_PLAIN_UA = {"User-Agent": "Autobench/1.0"}
+
+
+def _curl(url: str, params: dict | None, headers: dict) -> httpx.Response | None:
+    """The same GET through the `curl` binary (a TLS client Nasdaq's bot filter accepts); None if curl is missing
+    or also refused."""
+    exe = shutil.which("curl")
+    if not exe:
+        return None
+    full = str(httpx.URL(url, params=params or {}))
+    cmd = [exe, "-sS", "--compressed", "-m", "45", "-w", "\\n%{http_code}", full]
+    for k, v in headers.items():
+        cmd += ["-H", f"{k}: {v}"]
+    try:
+        out = subprocess.run(cmd, capture_output=True, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    body, _, code = out.stdout.rpartition(b"\n")
+    if out.returncode != 0 or code.strip() != b"200":
+        log.info("curl fallback for %s: exit %s, HTTP %s", url, out.returncode, code.strip().decode(errors="replace"))
+        return None
+    return httpx.Response(200, content=body, request=httpx.Request("GET", full))
 
 
 def _num(v: Any) -> float | None:
@@ -188,15 +222,37 @@ def fred_series(ids: list[str], start: str | None = None, timeout: float = 20) -
         params["cosd"] = start
     try:
         r = _client.get("https://fred.stlouisfed.org/graph/fredgraph.csv", params=params,
-                        headers={"User-Agent": _BROWSER["User-Agent"]}, timeout=timeout)
+                        headers=_PLAIN_UA, timeout=timeout)
     except httpx.HTTPError as e:
         raise ProviderError(f"FRED request failed: {e}") from e
     if r.status_code != 200:
         raise ProviderError(f"FRED returned HTTP {r.status_code}")
-    df = pd.read_csv(io.StringIO(r.text))
+    try:
+        df = _fred_frame(r.content)
+    except (ValueError, KeyError, IndexError, zipfile.BadZipFile) as e:  # pandas' ParserError is a ValueError
+        raise ProviderError(f"FRED sent an unreadable file ({r.headers.get('content-type')}): {e}") from e
+    if start:  # FRED does not always apply cosd to multi-series downloads
+        df = df[df.index >= pd.Timestamp(start)]
+    return df
+
+
+def _fred_frame(content: bytes) -> pd.DataFrame:
+    """fredgraph.csv: one CSV, or (series of mixed frequencies) a zip of one CSV per frequency plus a README."""
+    if content[:2] != b"PK":
+        return _fred_csv(content)
+    with zipfile.ZipFile(io.BytesIO(content)) as z:
+        frames = [_fred_csv(z.read(n)) for n in z.namelist() if n.lower().endswith(".csv")]
+    if not frames:
+        raise ValueError("no CSV in the archive")
+    return pd.concat(frames, axis=1).sort_index()
+
+
+def _fred_csv(content: bytes) -> pd.DataFrame:
+    df = pd.read_csv(io.BytesIO(content))
     date_col = df.columns[0]
     df[date_col] = pd.to_datetime(df[date_col])
     df = df.set_index(date_col)
+    df.index.name = None
     return df.apply(pd.to_numeric, errors="coerce")
 
 

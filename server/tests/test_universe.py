@@ -325,3 +325,18 @@ def test_ensure_wait_waits_for_a_refresh_already_running(monkeypatch):
     waiter.join(5)
     t.join(5)
     assert done.is_set() and u.listings.value is not None
+
+
+def test_listings_survive_a_refused_nasdaq(monkeypatch):
+    import pandas as pd
+
+    from autobench.providers.base import ProviderError
+    from autobench.services import universe as u
+
+    uni = u.Universe() if hasattr(u, "Universe") else u.universe
+    uni.listings.store(pd.DataFrame({"name": ["Apple"]}, index=pd.Index(["AAPL"], name="symbol")))
+    monkeypatch.setattr(u, "_fake", lambda: False)
+    monkeypatch.setattr(u.reference, "nasdaq_listings", lambda: (_ for _ in ()).throw(ProviderError("HTTP 403")))
+    before = uni.listings.updated
+    uni._refresh_listings()
+    assert list(uni.listings.value.index) == ["AAPL"] and uni.listings.updated >= before

@@ -3,6 +3,10 @@
 import 'package:web/web.dart';
 
 const icons = <String, String>{
+  'flask': 'M9 3h6M10 3v6l-5.5 9.5A1.7 1.7 0 0 0 6 21h12a1.7 1.7 0 0 0 1.5-2.5L14 9V3|M7.2 15h9.6',
+  'sigma': 'M18 5H6l6.5 7L6 19h12',
+  'scale': 'M12 4v16M8 20h8M5 7h14|M12 4l-7 3M12 4l7 3|M5 7l-3 6a3 3 0 0 0 6 0zM19 7l-3 6a3 3 0 0 0 6 0z',
+  'book': 'M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5zM5 19.5A1.5 1.5 0 0 0 6.5 21H19v-3|M9 7h6',
   'wallet': 'M3 7h15a3 3 0 0 1 3 3v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM3 7l12-4 2 4|M16 13.5h2',
   'trade': 'M7 20V4M3 8l4-4 4 4|M17 4v16M13 16l4 4 4-4',
   'shield': 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z',

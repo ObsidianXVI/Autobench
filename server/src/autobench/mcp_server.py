@@ -18,12 +18,21 @@ from . import guides
 from .schemas import (AnalysisIn, AnnotationIn, AnnotationPatch, ChartView, ClosePosition, NoteIn, OrderModify, OrderSpec,
                       Point, Style)
 from .services import analyses, annotations, backtest, filings, fundamentals, levels, market, market_context
+from .services import financier as financier_svc
 from .services import news as news_svc
 from .services import options as options_svc
 from .services import alerts as alerts_svc
 from .services import chart_layers, claude_code, journal, macro, patterns, portfolio, risk, screener, technicals, workspace
 from .services.events import bus
 from .services.trading import trading
+from .services.qbench import confluence as qconf
+from .services.qbench import factors as qfactors
+from .services.qbench import hedge as qhedge
+from .services.qbench import lab as qlab
+from .services.qbench import pairs as qpairs
+from .services.qbench import profile as qprofile
+from .services.qbench import strategies as qstrat
+from .services.qbench import xsection as qxs
 from .services import indicators as ind
 from .services.expressions import evaluate
 from .timeutil import format_ts, get_interval
@@ -1115,8 +1124,14 @@ def delete_screen(name: str) -> Any:
 
 @tool()
 def show_in_ui(
-    page: Annotated[Literal["chart", "screener", "heatmap", "markets", "calendar", "trading", "journal", "portfolio"], Field(description="Page to open")],
-    symbol: Annotated[str | None, Field(description="For page=chart")] = None,
+    page: Annotated[Literal["chart", "screener", "heatmap", "markets", "calendar", "trading", "journal", "portfolio",
+                            "qlab", "qsignals", "qarb", "qlib", "financier"],
+                    Field(description="Page to open. QBench pages (shown when the user enabled QBench): qlab = Quant Lab "
+                                      "for a symbol, qsignals = TA/FA/quant ranking + factor screen, qarb = pairs, hedging "
+                                      "and allocation, qlib = strategy library. financier = switch to Financier mode "
+                                      "(the user's finance console); tab = its page: overview | dataPlane | flowsPlane | "
+                                      "controlPlane | foresight | hindsight | portfolio")],
+    symbol: Annotated[str | None, Field(description="For page=chart or page=qlab")] = None,
     screen: Annotated[dict | None, Field(description="For page=screener: {filters, expression, signal, universe, sort, view}")] = None,
     period: Annotated[str | None, Field(description="For page=heatmap: 1d 1w 1m 3m 6m ytd 1y")] = None,
     panel: Annotated[Literal["watchlist", "trade", "alerts", "news", "agent", "notes", "layers"] | None,
@@ -1124,7 +1139,8 @@ def show_in_ui(
     watchlist: Annotated[str | None, Field(description="For panel=watchlist: which list")] = None,
     tab: Annotated[str | None, Field(description="For page=trading: positions | orders | proposals | history | fills | activity | risk; "
                                                  "for page=journal: trades | drawings | performance | notes; "
-                                                 "for page=portfolio: overview | performance | cash | imports")] = None,
+                                                 "for page=portfolio: overview | performance | cash | imports; "
+                                                 "for page=financier: the Financier page (see page)")] = None,
 ) -> Any:
     """Switch the user's web UI to a page so they see what you are discussing (e.g. the screener with your
     filters applied, the sector heatmap, pending proposals, a side panel). Use set_chart_view for the chart."""
@@ -1159,10 +1175,216 @@ def update_system_prompt(
 
 
 @tool()
-def get_guide(topic: Literal["workflow", "expressions", "annotations", "interpretation", "screener", "trading"]) -> Any:
+def get_guide(topic: Literal["workflow", "expressions", "annotations", "interpretation", "screener", "trading", "quant"]) -> Any:
     """Reference: research workflow, expression language, drawing types/conventions, interpretation notes,
-    screener fields and syntax, and the trading workflow (sizing, brackets, approvals, limits)."""
+    screener fields and syntax, the trading workflow (sizing, brackets, approvals, limits), and 'quant': the QBench
+    playbook (statistics of backtests, regime tests, strategy families and their evidence, pairs, hedging, sizing)."""
     return {"topic": topic, "text": guides.GUIDES[topic]}
+
+
+# ===================================================================================== QBench (quant)
+
+WatchlistArg = Annotated[str | None, Field(description="Use this saved watchlist's symbols (alternative to symbols)")]
+
+
+def _syms(symbols: list[str] | None, watchlist: str | None, minimum: int = 1) -> list[str]:
+    syms = list(symbols or [])
+    if watchlist:
+        syms += workspace.get_watchlist(watchlist)["symbols"]
+    syms = list(dict.fromkeys(s.upper() for s in syms if s and not s.startswith("###")))  # skip section headers
+    if len(syms) < minimum:
+        raise ToolError(f"Give at least {minimum} symbol(s) or a watchlist")
+    return syms
+
+
+@tool()
+def list_quant_strategies(
+    kind: Annotated[Literal["single", "cross_sectional", "pairs", "portfolio", "reference"] | None,
+                    Field(description="single = lab-testable on one stock; cross_sectional = ranks a list; pairs; "
+                                      "portfolio = allocation/hedging; reference = knowledge only")] = None,
+    family: Annotated[str | None, Field(description="trend momentum mean_reversion volatility seasonality factor stat_arb "
+                                                    "allocation hedging event")] = None,
+    strategy_id: Annotated[str | None, Field(description="Return the full card (rules, papers, evidence, failure modes, "
+                                                         "parameters, expression) of this strategy")] = None,
+) -> Any:
+    """The QBench strategy library: published quant strategies (time-series & cross-sectional momentum, trend filters,
+    RSI(2)/IBS/Bollinger reversion, volatility targeting, turn-of-month, factor portfolios, pairs/stat-arb, risk parity,
+    beta hedging, PEAD...) with their papers, evidence strength and decay. Read a card before proposing a strategy."""
+    if strategy_id:
+        return qstrat.get(strategy_id).describe(full=True)
+    return {"strategies": qstrat.catalog(kind, family, full=False),
+            "evidence_scale": "strong > moderate > weak > contested > myth (myths are listed so you can recognise them)"}
+
+
+@tool()
+def run_strategy_lab(
+    symbol: Symbol,
+    strategies: Annotated[list[str] | None, Field(description="Library ids (default: every single-asset strategy)")] = None,
+    lookback: Lookback = "15y",
+    cost_bps: Annotated[float, Field(ge=0, le=100, description="Cost per unit of turnover (spread + commission)")] = 5.0,
+    allow_short: Annotated[bool, Field(description="Allow negative exposure (only if the account can short)")] = False,
+) -> Any:
+    """Walk-forward test of every single-asset library strategy on one stock: parameters are re-optimised each year on
+    past data only and traded the next year; reports out-of-sample Sharpe, CAGR, drawdown, timing alpha vs holding the
+    stock, Deflated Sharpe (luck-adjusted for all combinations tried), parameter stability, a verdict and each strategy's
+    position today. Results are saved (the Quant Lab page and get_quant_confluence reuse them). The best way to find
+    which quant approach, if any, fits a stock."""
+    res = qlab.run_lab(symbol, strategies, lookback, cost_bps, allow_short)
+    bus.publish("qbench.lab", {"symbol": res["symbol"], "author": AUTHOR, "best": res["best"]})
+    out = {k: v for k, v in res.items() if k != "strategies"}
+    out["strategies"] = [{k: v for k, v in s.items() if k not in ("equity_curve", "walk_forward")}
+                         | {"walk_forward_windows": len(s.get("walk_forward") or [])} for s in res["strategies"]]
+    return out
+
+
+@tool()
+def run_quant_strategy(
+    symbol: Symbol,
+    strategy: Annotated[str, Field(description="Single-asset library id, e.g. tsmom, rsi2, donchian, vol_target")],
+    params: Annotated[dict[str, Any] | None, Field(description="Override parameters (see the strategy card)")] = None,
+    lookback: Lookback = "10y",
+    cost_bps: Annotated[float, Field(ge=0, le=100)] = 5.0,
+    allow_short: bool = False,
+) -> Any:
+    """Backtest one library strategy with fixed parameters: performance vs buy-and-hold, in-sample vs out-of-sample,
+    PSR, round-trip stats, recent trades, yearly returns, and the position today. Use after run_strategy_lab to inspect
+    a candidate, or to test a parameter choice."""
+    res = qlab.run_strategy(symbol, strategy, params, lookback, cost_bps, allow_short)
+    res.pop("equity_curve", None)
+    return res
+
+
+@tool()
+def get_quant_profile(symbol: Symbol, lookback: Lookback = "5y") -> Any:
+    """Quant profile of a stock: return distribution (Sharpe, Sortino, skew, kurtosis, VaR/CVaR), volatility regime
+    (realised vol and its 3-year percentile, expected 1σ moves), trending vs mean-reverting tests (Hurst, Lo-MacKinlay
+    variance ratios, ADF, half-life) with a regime verdict and the strategy families it favours, factor exposures via
+    ETF proxies (market, size, value, momentum, quality, low vol), seasonality and the overnight/intraday split."""
+    return qprofile.quant_profile(symbol, lookback)
+
+
+@tool()
+def get_factor_scores(symbol: Symbol) -> Any:
+    """Where a stock ranks (percentile 0-100) on value, quality, growth, momentum and low volatility among ~6,000 US
+    stocks and within its sector, with the composite Q-Score and the raw inputs. FA expressed as quant factors."""
+    return qfactors.factor_scores(symbol)
+
+
+@tool()
+def factor_screen(
+    weights: Annotated[dict[str, float] | None, Field(description="Factor weights, keys: value quality growth momentum "
+                                                                  "low_vol (default 0.2/0.25/0.1/0.3/0.15)")] = None,
+    universe: Annotated[str, Field(description="'all', 'sp500' or 'watchlist:<name>'")] = "all",
+    sector_neutral: Annotated[bool, Field(description="Rank within each sector (avoids sector bets)")] = False,
+    sector: str | None = None,
+    min_score: Annotated[float | None, Field(ge=0, le=100)] = None,
+    symbols: Annotated[list[str] | None, Field(description="Rank only these symbols")] = None,
+    limit: Annotated[int, Field(ge=1, le=200)] = 30,
+) -> Any:
+    """Multi-factor stock selection: rank the US universe (or a list) by a weighted composite of factor percentiles
+    (e.g. quality + momentum, or value + quality). Idea generation for factor-tilted portfolios."""
+    return qfactors.factor_screen(weights, universe, sector_neutral, min_score, sector, limit, symbols)
+
+
+@tool()
+def run_factor_backtest(
+    factor: Annotated[Literal["momentum_12_1", "residual_momentum", "reversal_1m", "low_vol", "high52", "trend_strength"],
+                      Field(description="Ranking signal")] = "momentum_12_1",
+    symbols: Annotated[list[str] | None, Field(description="The list to rank (≥ top_k + 2; 15+ recommended)")] = None,
+    watchlist: WatchlistArg = None,
+    top_k: Annotated[int, Field(ge=1, le=50)] = 5,
+    lookback: Lookback = "8y",
+    cost_bps: Annotated[float, Field(ge=0, le=100)] = 10.0,
+) -> Any:
+    """Cross-sectional strategy over a list (e.g. the watchlist): each month hold the top k by the factor; compares
+    with the equal-weighted list (the honest benchmark), the bottom k and SPY; information ratio, PSR, current ranking."""
+    res = qxs.run_factor_backtest(_syms(symbols, watchlist, top_k + 2), factor, top_k, lookback, cost_bps)
+    res.pop("equity_curve", None)
+    return res
+
+
+@tool()
+def find_pairs(
+    symbols: Annotated[list[str] | None, Field(description="Candidates (same industry works best), ≤ 60")] = None,
+    watchlist: WatchlistArg = None,
+    lookback: Lookback = "2y",
+    min_corr: Annotated[float, Field(ge=-1, le=1, description="Skip pairs whose daily-return correlation is lower")] = 0.6,
+    limit: Annotated[int, Field(ge=1, le=100)] = 20,
+) -> Any:
+    """Statistical-arbitrage scan: Engle-Granger cointegration of every correlated pair, hedge ratio, spread
+    half-life, current z-score and an entry signal. Follow up with analyze_pair before trusting any pair."""
+    return qpairs.find_pairs(_syms(symbols, watchlist, 2), lookback, min_corr, limit)
+
+
+@tool()
+def analyze_pair(
+    a: Annotated[str, Field(description="First leg (bought when the spread is cheap)")],
+    b: Annotated[str, Field(description="Second leg (hedge), e.g. a peer or the sector ETF")],
+    lookback: Lookback = "5y",
+    entry_z: Annotated[float, Field(gt=0, le=5)] = 2.0,
+    exit_z: Annotated[float, Field(ge=0, le=4)] = 0.0,
+    stop_z: Annotated[float, Field(gt=0, le=10)] = 4.0,
+    notional: Annotated[float | None, Field(gt=0, description="Gross $ to size the legs of a new signal")] = None,
+) -> Any:
+    """Pair / residual mean-reversion backtest with a rolling, look-ahead-free hedge ratio: performance, trades, stops,
+    current z-score and signal, hedge-ratio stability, cointegration over the last year, and leg sizes. Also the
+    single-name version of Avellaneda-Lee stat-arb when b is the stock's sector ETF."""
+    res = qpairs.analyze_pair(a, b, lookback, entry_z=entry_z, exit_z=exit_z, stop_z=stop_z, notional=notional)
+    res.pop("equity_curve", None)
+    z = res.pop("zscore_series")
+    res["zscore_last_20"] = dict(zip(z["dates"][-20:], z["z"][-20:]))
+    return res
+
+
+@tool()
+def optimize_allocation(
+    symbols: Annotated[list[str] | None, Field(description="2-40 holdings")] = None,
+    watchlist: WatchlistArg = None,
+    method: Annotated[Literal["equal", "inverse_vol", "risk_parity", "min_variance", "hrp"],
+                      Field(description="risk_parity = equal risk contribution; hrp = hierarchical risk parity")] = "risk_parity",
+    lookback: Lookback = "1y",
+    max_weight: Annotated[float | None, Field(gt=0, le=1, description="Cap per holding, e.g. 0.25")] = None,
+    capital: Annotated[float | None, Field(gt=0, description="Dollars to allocate (adds $ and shares)")] = None,
+) -> Any:
+    """Risk-based portfolio weights on a Ledoit-Wolf shrunk covariance, with each holding's risk contribution, portfolio
+    vol, diversification ratio, effective N and a comparison of all methods."""
+    return qhedge.optimize_allocation(_syms(symbols, watchlist, 2), method, lookback, max_weight, capital)
+
+
+@tool()
+def get_hedge_plan(
+    positions: Annotated[dict[str, float] | None, Field(description="{symbol: dollar value}; default: the connected "
+                                                                    "broker account's positions")] = None,
+    instruments: Annotated[list[str] | None, Field(description="Hedge ETFs for the min-variance hedge, e.g. "
+                                                               "['SPY','QQQ','XLK'] (default SPY)")] = None,
+    lookback: Lookback = "1y",
+) -> Any:
+    """Market risk of a set of holdings: per-position beta (1y and 6m), portfolio dollar beta, the SPY short that
+    neutralises it (vol before/after), alternatives (inverse ETF, puts, partial hedge) and a minimum-variance hedge on
+    chosen ETFs. Use when the regime is hostile but the stock theses stand, or to check concentration in one factor."""
+    return qhedge.hedge_plan(positions, instruments, lookback)
+
+
+@tool()
+def get_quant_confluence(
+    symbol: Symbol,
+    run_lab: Annotated[bool, Field(description="Re-run the Strategy Lab first (slower); default uses its saved result")] = False,
+) -> Any:
+    """One view combining technical analysis, fundamentals (as factor ranks) and quant evidence (momentum, regime, the
+    Strategy Lab's live signal) into pillar scores, a composite, agreement level, and quant-derived entry/stop/target
+    plans (trend pullback, mean reversion, breakout), volatility-target weight and a Kelly bound. Use it to decide
+    whether and how to trade a name, then verify with the trade-planning workflow."""
+    return qconf.confluence(symbol, run_lab=run_lab)
+
+
+@tool()
+def rank_watchlist_quant(
+    watchlist: WatchlistArg = "default",
+    symbols: Annotated[list[str] | None, Field(description="Or rank these symbols")] = None,
+) -> Any:
+    """Rank a watchlist by the TA + FA + quant confluence composite, with each name's regime, momentum rank, preferred
+    plan and Strategy Lab signal (where the lab has been run). Use to pick which names deserve a full analysis."""
+    return qconf.rank(_syms(symbols, None if symbols else watchlist))
 
 
 # ===================================================================================== trading
@@ -1186,6 +1408,21 @@ def get_portfolio() -> Any:
     ov["pending_tickets"] = trading.tickets(status="pending")
     ov["limits"] = trading.settings().model_dump()
     return ov
+
+
+@tool()
+def get_financier_summary(
+    refresh: Annotated[bool, Field(description="Re-read Firestore instead of the copy cached for two minutes")] = False,
+) -> Any:
+    """The user's Financier data (Autobench's Financier mode; vral-altos Firestore, read-only) as it relates to
+    trading: the Financier Portfolio bound to the brokerage account (linked_portfolio), the Physical Account that
+    holds it and the Virtual Accounts backed by it (e.g. the L-Fund) with their balances, deposits into each
+    Portfolio, and Financier's risk plan per open position (plans[SYMBOL] = stop, target, note). Use it when the
+    capital a sleeve is meant to hold matters for sizing, or to check that a position's stop matches the plan the
+    user recorded in Financier. Amounts are in Financier's currency (SGD unless a Portfolio says otherwise)."""
+    out = financier_svc.summary(refresh=refresh)
+    out["open_trades"] = out["open_trades"][:100]
+    return out
 
 
 @tool()
@@ -1368,6 +1605,14 @@ def analyze_stock(symbol: str, horizon: str = "swing") -> str:
             "Quantify claims, test technical hypotheses with run_signal_study/run_backtest before relying on them, "
             "draw the key levels and trade plan on the chart with one tag, save the analysis, then report: verdict, "
             "evidence (technical, fundamental, sentiment, risk), bull vs bear case, plan, and what would invalidate it.")
+
+
+@mcp.prompt()
+def quant_research(symbol: str) -> str:
+    """QBench quant study of one stock: profile, walk-forward strategy lab, factors, confluence with TA/FA."""
+    return (f"Run a QBench quant study of {symbol.upper()}.\n\n{guides.QUANT_WORKFLOW}\n"
+            "Report the regime verdict, which strategies survived out-of-sample (with alpha_dsr), the confluence, "
+            "and a concrete plan only if the evidence supports one. Save the study with save_note.")
 
 
 @mcp.prompt()

@@ -300,6 +300,9 @@ class TradingService:
     def connection(self) -> dict:
         s = get_settings()
         saved = db.state_get(CONNECTION_KEY) or {}
+        if s.autobench_gateway == "managed":
+            # Cloud Run: IB Gateway runs in this container; a host/port saved on the Mac does not apply
+            saved = {k: v for k, v in saved.items() if k not in ("host", "port")}
         return {"broker": saved.get("broker") or s.autobench_broker, "host": saved.get("host") or s.ibkr_host,
                 "port": saved.get("port") or s.ibkr_port,
                 "client_id": saved.get("client_id") if saved.get("client_id") is not None else s.ibkr_client_id,
@@ -374,6 +377,10 @@ class TradingService:
         self.start()
         if self.broker is None:
             raise ValueError("No broker configured (choose IBKR or the simulator in the Trading page)")
+        if self._kind == "ibkr":
+            from .broker.gateway import gateway
+
+            gateway.touch()  # on Cloud Run: IB Gateway starts on demand and stays up while it is used
         return self.broker
 
     # --- state ------------------------------------------------------------------------------------
@@ -409,7 +416,8 @@ class TradingService:
                 "armed": self._armed, "live_allowed": get_settings().autobench_allow_live_trading,
                 "can_trade": bool(st.get("connected")) and (st.get("paper") is not False or
                                                             (get_settings().autobench_allow_live_trading and self._armed)),
-                "connection": self.connection(), "pending_tickets": self._count_tickets("pending")}
+                "connection": self.connection(), "pending_tickets": self._count_tickets("pending"),
+                "gateway": _gateway_status()}
 
     # --- reads ------------------------------------------------------------------------------------
     def account(self) -> dict:
@@ -1059,3 +1067,9 @@ class TradingService:
 
 
 trading = TradingService()
+
+
+def _gateway_status() -> dict:
+    from .broker.gateway import gateway
+
+    return gateway.status()

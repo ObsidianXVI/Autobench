@@ -12,6 +12,8 @@ import 'agent.dart';
 import 'alerts.dart';
 import 'layers.dart';
 import 'news.dart';
+import 'quant.dart';
+import '../pages/qbench/common.dart';
 import 'trade.dart';
 import 'watchlist.dart';
 
@@ -40,12 +42,19 @@ class Dock {
       _PanelDef('agent', 'Agent activity & analyses', 'bot', () => AgentPanel()),
       _PanelDef('notes', 'Notes', 'note', () => NotesPanel()),
       _PanelDef('layers', 'Layers & objects', 'layers', () => LayersPanel()),
+      _PanelDef('quant', 'Quant (QBench): TA + FA + quant for this symbol', 'sigma', () => QuantPanel()),
     ];
     append(root, [_resizer, _host, _rail]);
     _scope.listen(store.panel, (_) => _render());
     _scope.listen(store.panelWidth, (w) => _host.style.width = '${w}px');
     _scope.listen(store.unseenAgent, (_) => _renderRail());
     _scope.listen(store.alerts, (_) => _renderRail());
+    var qb = qbenchOn;
+    _scope.listen(store.prefs, (_) {
+      if (qb == qbenchOn) return;
+      qb = qbenchOn;
+      _render();
+    });
     _host.style.width = '${store.panelWidth.value}px';
     _bindResize();
     _render();
@@ -59,12 +68,14 @@ class Dock {
         NotesPanel p => p.root,
         LayersPanel p => p.root,
         TradePanel p => p.root,
+        QuantPanel p => p.root,
         _ => h('div'),
       };
 
   void _render() {
     // the drawings list ("objects") became the Layers panel
     if (store.panel.value == 'objects') store.panel.value = 'layers';
+    if (store.panel.value == 'quant' && !qbenchOn) store.panel.value = 'watchlist';
     final key = store.panel.value;
     root.classList.toggle('collapsed', key == null);
     if (key != null) {
@@ -81,6 +92,7 @@ class Dock {
     final triggered = store.alerts.value.where((a) => a.status == 'triggered').length;
     replace(_rail, [
       for (final d in _defs)
+        if (d.key != 'quant' || qbenchOn)
         h('button.rail-btn${d.key == key ? '.on' : ''}', [
           icon(d.iconName, size: 20),
           if (d.key == 'agent' && store.unseenAgent.value > 0) h('span.rail-badge.agent', '${store.unseenAgent.value}'),
@@ -98,6 +110,12 @@ class Dock {
           },
         }),
     ]);
+  }
+
+  /// The Strategy Lab ran for [symbol] (forwarded to the Quant panel if it exists).
+  void onLabEvent(String symbol) {
+    final p = _panels['quant'];
+    if (p is QuantPanel) p.onLabEvent(symbol);
   }
 
   void _bindResize() {

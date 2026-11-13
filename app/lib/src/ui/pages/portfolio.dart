@@ -17,6 +17,7 @@ import '../kit/overlay.dart';
 import '../kit/state.dart';
 import '../store.dart';
 import '../trading_state.dart';
+import 'financier_link.dart';
 import 'portfolio_chart.dart';
 
 const _tabs = [
@@ -50,6 +51,7 @@ class PortfolioPage {
   String get _start => store.pref<String>('portfolio.start');
   String get _end => store.pref<String>('portfolio.end');
   final List<PerfChart> _charts = [];
+  final FinancierLink _fin = FinancierLink();
 
   /// Shows a custom date range on the Performance tab (from a drag on a chart, a table row, or the date fields).
   void _showRange(String start, String end) {
@@ -208,6 +210,7 @@ class PortfolioPage {
         ],
       ]),
       if (life.v != null) _composition(life),
+      _finLink(showLive ? live['positions'].list : sp['positions'].list),
       h('div.pf-grid', [
         h('section.jr-section', [
           h('h3', showLive ? 'Positions (live)' : 'Positions (statement ${sp['date'].s ?? ''})'),
@@ -232,6 +235,12 @@ class PortfolioPage {
         ]),
       ]),
     ]);
+  }
+
+  /// Financier's side of this account (bound Portfolio, capital, risk plans), loaded on its own.
+  HTMLElement _finLink(List<J> positions) {
+    _fin.load(positions);
+    return _fin.root;
   }
 
   /// Where the account value came from: money put in vs what it earned (trading and income).

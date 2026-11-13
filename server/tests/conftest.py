@@ -33,8 +33,16 @@ def fresh_env(tmp_path, monkeypatch, request):
     # never read the developer's Claude Code sessions or run the real `claude`
     monkeypatch.setenv("AUTOBENCH_CLAUDE_HOME", str(tmp_path / "claude-home"))
     monkeypatch.setenv("AUTOBENCH_CLAUDE_BIN", str(tmp_path / "no-claude"))
+    # never serve the developer's Financier build or read the real Firestore from unit tests
+    monkeypatch.setenv("AUTOBENCH_FINANCIER_DIR", str(tmp_path / "no-financier"))
+    monkeypatch.setenv("AUTOBENCH_FIREBASE_PROJECT", "test-project")
+    monkeypatch.setenv("AUTOBENCH_STATE_LEASE_SECONDS", "0")
     get_settings.cache_clear()
     reset_providers()
+    from autobench.services import gcp
+
+    gcp.reset_token()
+    monkeypatch.delenv("FIRESTORE_EMULATOR_HOST", raising=False)
     db.init_db(f"sqlite:///{tmp_path / 'test.db'}")
     yield
     from autobench.services.trading import trading

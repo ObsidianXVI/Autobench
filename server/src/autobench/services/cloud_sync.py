@@ -31,71 +31,15 @@ from ..config import get_settings
 
 log = logging.getLogger(__name__)
 
-TOKEN_URL = "https://oauth2.googleapis.com/token"
+from .gcp import TOKEN_URL, access_token, document, encode  # noqa: F401  (one mechanism: services/gcp.py)
+from .gcp import headers as gcp_headers
+
 FIRESTORE = "https://firestore.googleapis.com/v1"
 
 _lock = threading.Lock()
 _state: dict[str, Any] = {
     "last_push": 0.0, "last_connected": False, "last_hash": None, "last_error": None, "last_source": None,
-    "token": None, "token_expiry": 0.0,
 }
-
-
-# ------------------------------------------------------------------------------ Firestore encoding
-
-def encode(value: Any) -> dict:
-    """A JSON-like value as a Firestore REST `Value`."""
-    if value is None:
-        return {"nullValue": None}
-    if isinstance(value, bool):
-        return {"booleanValue": value}
-    if isinstance(value, int):
-        return {"integerValue": str(value)}
-    if isinstance(value, float):
-        return {"doubleValue": value}
-    if isinstance(value, str):
-        return {"stringValue": value}
-    if isinstance(value, datetime):
-        return {"timestampValue": value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")}
-    if isinstance(value, dict):
-        return {"mapValue": {"fields": {str(k): encode(v) for k, v in value.items()}}}
-    if isinstance(value, (list, tuple)):
-        return {"arrayValue": {"values": [encode(v) for v in value]}}
-    return {"stringValue": str(value)}
-
-
-def document(fields: dict) -> dict:
-    return {"fields": {k: encode(v) for k, v in fields.items()}}
-
-
-# ------------------------------------------------------------------------------ credentials
-
-def _adc_path() -> Path:
-    env = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-    if env:
-        return Path(env)
-    return Path.home() / ".config" / "gcloud" / "application_default_credentials.json"
-
-
-def access_token(client: httpx.Client) -> str:
-    """OAuth access token from the application-default user login, cached until expiry."""
-    if _state["token"] and time.time() < _state["token_expiry"] - 60:
-        return _state["token"]
-    path = _adc_path()
-    if not path.exists():
-        raise RuntimeError("No Google application-default login; run `gcloud auth application-default login`.")
-    creds = json.loads(path.read_text())
-    if creds.get("type") != "authorized_user":
-        raise RuntimeError(f"Unsupported credential type {creds.get('type')!r}; expected a user login.")
-    r = client.post(TOKEN_URL, data={
-        "grant_type": "refresh_token", "refresh_token": creds["refresh_token"],
-        "client_id": creds["client_id"], "client_secret": creds["client_secret"],
-    })
-    r.raise_for_status()
-    body = r.json()
-    _state["token"] = body["access_token"]
-    _state["token_expiry"] = time.time() + int(body.get("expires_in", 3600))
-    return _state["token"]
 
 
 # ------------------------------------------------------------------------------ snapshot
@@ -142,8 +86,7 @@ def _fingerprint(snap: dict) -> str:
 
 def push(snap: dict, project: str, client: httpx.Client, now: datetime | None = None) -> None:
     now = now or datetime.now(timezone.utc)
-    token = access_token(client)
-    headers = {"Authorization": f"Bearer {token}", "x-goog-user-project": project}
+    headers = gcp_headers(client, project)
     body = document({**snap, "synced_at": now})
     # The Vral Altos platform database ((default) is Financier's).
     base = f"{FIRESTORE}/projects/{project}/databases/platform/documents/autobench/latest"
@@ -165,7 +108,7 @@ def telemetry(project: str, client: httpx.Client, severity: str, message: str,
     try:
         now = now or datetime.now(timezone.utc)
         root = f"projects/{project}/databases/platform/documents"
-        token = access_token(client)
+        headers = gcp_headers(client, project)
         hour = now.strftime("%Y%m%d%H")
         minute = f"m{now.minute:02d}"
         start = now.replace(minute=0, second=0, microsecond=0)
@@ -183,7 +126,7 @@ def telemetry(project: str, client: httpx.Client, severity: str, message: str,
                  {"fieldPath": f"m.{minute}.{k}", "increment": encode(v)})]},
         ]
         r = client.post(f"{FIRESTORE}/{root}:commit", json={"writes": writes},
-                        headers={"Authorization": f"Bearer {token}", "x-goog-user-project": project})
+                        headers=headers)
         if r.status_code >= 400:
             log.warning("telemetry not written (%s): %s", r.status_code, r.text[:200])
     except Exception as e:  # telemetry never breaks the sync

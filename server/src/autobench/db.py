@@ -340,6 +340,7 @@ def init_db(url: str | None = None) -> Engine:
     """Create (or re-create, when a url is given, e.g. in tests) the engine and tables."""
     global _engine, _session_factory
     with _lock:
+        explicit_url = url is not None
         if url is None:
             path = get_settings().db_path
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -350,7 +351,38 @@ def init_db(url: str | None = None) -> Engine:
         Base.metadata.create_all(_engine)
         _migrate(_engine)
         _session_factory = sessionmaker(_engine, expire_on_commit=False)
+        _attach_state_store(_engine, explicit_url)
         return _engine
+
+
+def mirrored_tables() -> dict:
+    from .state_store import CACHE_TABLES
+
+    return {t.name: t for t in Base.metadata.sorted_tables if t.name not in CACHE_TABLES}
+
+
+def _attach_state_store(engine: Engine, explicit_url: bool) -> None:
+    """Firestore is the source of truth when a state project is configured: load it into the working copy
+    and write every change through. An explicit url (tests, one-off tools) never attaches."""
+    from . import state_store
+
+    settings = get_settings()
+    if explicit_url or not settings.autobench_state_project:
+        state_store.activate(None)
+        return
+    mirror = state_store.Mirror(settings.autobench_state_project, settings.autobench_state_database,
+                                mirrored_tables())
+    lease = settings.autobench_state_lease_seconds
+    if lease > 0:
+        mirror.claim(wait=2 * lease)
+    counts = mirror.load(engine)
+    state_store.activate(mirror)
+    if lease > 0:
+        mirror.watch_lease(lease)
+    import logging
+
+    logging.getLogger(__name__).info("state loaded from Firestore %s/%s: %s", settings.autobench_state_project,
+                                     settings.autobench_state_database, counts)
 
 
 def _migrate(engine: Engine) -> None:

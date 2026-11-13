@@ -80,6 +80,8 @@ def binary() -> str | None:
 
 
 _auth: tuple[str, float, dict] | None = None
+SUBSCRIPTION_METHODS = ("claude.ai", "oauth_token")
+OAUTH_TOKEN_PREFIX = "sk-ant-oat"  # `claude setup-token` (subscription); API keys are sk-ant-api…
 
 
 def auth(refresh: bool = False) -> dict:
@@ -96,7 +98,10 @@ def auth(refresh: bool = False) -> dict:
     except (OSError, subprocess.SubprocessError, ValueError):
         j = {}
     info = {"logged_in": bool(j.get("loggedIn")), "method": j.get("authMethod"), "subscription": j.get("subscriptionType")}
-    info["ok"] = info["logged_in"] and info["method"] == "claude.ai"
+    # the subscription: the claude.ai login (the Mac) or its long-lived token from `claude setup-token` (the cloud,
+    # `oauth_token`; _account_token only accepts sk-ant-oat tokens). Never an API key or a third-party provider.
+    info["ok"] = (info["logged_in"] and info["method"] in SUBSCRIPTION_METHODS and not j.get("apiKeySource")
+                  and j.get("apiProvider", "firstParty") == "firstParty")
     _auth = (path, time.time(), info)
     return info
 
@@ -492,7 +497,33 @@ runs = Runs()
 
 
 def _env() -> dict[str, str]:
-    return {k: v for k, v in os.environ.items() if not k.startswith(_SCRUB)}
+    """The environment for `claude`: Autobench's own secrets (broker, data keys) never reach it. In the cloud the
+    account comes from the `claude-tokens` secret and sessions live under the configured Claude home."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith(_SCRUB)}
+    s = get_settings()
+    if s.autobench_claude_home:
+        env["CLAUDE_CONFIG_DIR"] = str(home())
+    if s.autobench_claude_token_ref:
+        token = _account_token(s.autobench_claude_token_ref, s.autobench_claude_tokens_file)
+        if token:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+    return env
+
+
+def _account_token(ref: str, path: str) -> str | None:
+    try:
+        tokens = json.loads(Path(path).read_text())
+    except (OSError, ValueError) as e:
+        log.warning("claude-tokens unavailable at %s: %s", path, e)
+        return None
+    token = tokens.get(ref) if isinstance(tokens, dict) else None
+    if not token:
+        log.warning("claude-tokens has no entry %r", ref)
+        return None
+    if not str(token).startswith(OAUTH_TOKEN_PREFIX):
+        log.warning("claude-tokens entry %r is not a subscription token (claude setup-token); not used", ref)
+        return None
+    return token
 
 
 def _check(text: str) -> str:

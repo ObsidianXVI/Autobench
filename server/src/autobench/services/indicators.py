@@ -595,6 +595,42 @@ def _force_ind(df, length):
     return ema(df["c"].diff() * df["v"], _check_int("length", length))
 
 
+# --- quant / statistics (QBench) -----------------------------------------------------------
+
+
+@indicator("ibs", "Internal Bar Strength", "statistics", False, {}, ["ibs"],
+           "(close - low) / (high - low), 0..1. Closes near the low (< 0.2) tend to mean-revert the next day in "
+           "index ETFs (Pagonidis 2013).", [0.2, 0.8])
+def _ibs_ind(df):
+    rng = (df["h"] - df["l"]).replace(0, np.nan)
+    return ((df["c"] - df["l"]) / rng).clip(0, 1)
+
+
+@indicator("efficiency_ratio", "Kaufman Efficiency Ratio", "statistics", False, {"length": 20}, ["er"],
+           "|net change| / sum of |bar changes| over n bars, 0..1. High = clean trend, low = noisy range.", [0.3])
+def _er_ind(df, length):
+    n = _check_int("length", length, 2)
+    c = df["c"]
+    return (c - c.shift(n)).abs() / c.diff().abs().rolling(n, min_periods=n).sum().replace(0, np.nan)
+
+
+@indicator("hurst", "Rolling Hurst Exponent", "statistics", False, {"length": 128}, ["hurst"],
+           "Scaling of lagged log-price differences over a rolling window: ~0.5 random walk, > 0.5 trending, "
+           "< 0.5 mean-reverting. Noisy on short windows (±0.05).", [0.5])
+def _hurst_ind(df, length):
+    n = _check_int("length", length, 32)
+    lp = np.log(df["c"].where(df["c"] > 0))
+    lags = [lag for lag in (2, 4, 8, 16) if lag <= n // 4]
+    logs = []
+    for lag in lags:
+        d = lp - lp.shift(lag)
+        logs.append(np.log(d.rolling(n - lag, min_periods=n - lag).std(ddof=0).replace(0, np.nan)))
+    x = np.log(np.array(lags, float))
+    xc = x - x.mean()
+    num = sum(xc[i] * logs[i] for i in range(len(lags)))
+    return num / float((xc**2).sum())
+
+
 # --- public API ----------------------------------------------------------------------------
 
 

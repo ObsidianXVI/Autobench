@@ -11,11 +11,11 @@ from urllib.parse import urlparse
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import db
+from . import db, iap, state_store
 from .config import REPO_DIR, get_settings
 from .mcp_server import mcp
 from .providers.base import ProviderError
@@ -24,6 +24,7 @@ from .schemas import AccountSelect, AnalysisIn, AnnotationIn, AnnotationPatch, B
 from .schemas import OrderModify, OrderSpec
 from .services import alerts as alerts_svc
 from .services import claude_code
+from .services import financier as financier_svc
 from .services import journal, portfolio
 from .services.statements import StatementError
 from .services import analyses, annotations, backtest, fundamentals, macro, market, market_context, screener
@@ -33,6 +34,14 @@ from .services import news as news_svc
 from .services import options as options_svc
 from .services.events import bus
 from .services.trading import trading
+from .services.qbench import confluence as qconf
+from .services.qbench import factors as qfactors
+from .services.qbench import hedge as qhedge
+from .services.qbench import lab as qlab
+from .services.qbench import pairs as qpairs
+from .services.qbench import profile as qprofile
+from .services.qbench import strategies as qstrat
+from .services.qbench import xsection as qxs
 from .timeutil import get_interval, resolve_range
 
 log = logging.getLogger(__name__)
@@ -143,11 +152,42 @@ class SimPriceBody(BaseModel):
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1", "testserver", "testclient"}
 
 
+class IapMiddleware:
+    """Cloud Run: every HTTP and WebSocket request must carry a verified IAP identity of an owner (iap.py).
+    Only the container's own health probe path is exempt; it is still behind IAP from outside."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket") or not iap.enabled() or scope.get("path") == "/api/health":
+            return await self.app(scope, receive, send)
+        headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers") or []}
+        if iap.internal_ok(headers.get(iap.INTERNAL_HEADER)):
+            # Claude Code inside the container calling Autobench's MCP (token from the workspace .mcp.json)
+            return await self.app(scope, receive, send)
+        try:
+            email = await asyncio.to_thread(iap.verify, headers.get(iap.HEADER))
+        except iap.Denied as e:
+            if scope["type"] == "websocket":
+                await send({"type": "websocket.close", "code": 1008})
+                return
+            await JSONResponse({"detail": str(e)}, status_code=401)(scope, receive, send)
+            return
+        scope.setdefault("state", {})["owner"] = email
+        return await self.app(scope, receive, send)
+
+
+def _verified_owner(scope_state) -> bool:
+    return iap.enabled() and bool((scope_state or {}).get("owner"))
+
+
 def trading_guard(request: Request) -> None:
-    """Trading writes: only from this machine's UI. The custom header cannot be sent cross-site without a
-    CORS preflight (which other origins fail), and the Host check defeats DNS rebinding."""
+    """Trading writes: only from this machine's UI (or, on Cloud Run, from the owner verified by IAP). The custom
+    header cannot be sent cross-site without a CORS preflight (which other origins fail), and the Host check
+    defeats DNS rebinding."""
     host = request.url.hostname or ""
-    if host not in _LOCAL_HOSTS and host != get_settings().autobench_host:
+    if not _verified_owner(request.scope.get("state")) and host not in _LOCAL_HOSTS and host != get_settings().autobench_host:
         raise HTTPException(403, "Trading requests must come from the local UI")
     if request.headers.get("x-autobench") != "1":
         raise HTTPException(403, "Missing X-Autobench header")
@@ -157,6 +197,71 @@ class ClaudeMessage(BaseModel):
     text: str = Field(..., max_length=100_000)
     view: dict[str, Any] | None = None  # what the user has open in the app
     fork: bool = False
+
+
+class QSymbols(BaseModel):
+    symbols: list[str] | None = None
+    watchlist: str | None = None
+
+    def resolve(self, minimum: int = 1) -> list[str]:
+        syms = list(self.symbols or [])
+        if self.watchlist:
+            syms += workspace.get_watchlist(self.watchlist)["symbols"]
+        syms = list(dict.fromkeys(s.upper() for s in syms if s and not s.startswith("###")))  # skip section headers
+        if len(syms) < minimum:
+            raise ValueError(f"Give at least {minimum} symbol(s) or a watchlist")
+        return syms
+
+
+class QLabBody(BaseModel):
+    strategies: list[str] | None = None
+    lookback: str = "15y"
+    cost_bps: float = Field(5.0, ge=0, le=100)
+    allow_short: bool = False
+
+
+class QRunBody(BaseModel):
+    symbol: str
+    strategy: str
+    params: dict[str, Any] | None = None
+    lookback: str = "10y"
+    cost_bps: float = Field(5.0, ge=0, le=100)
+    allow_short: bool = False
+
+
+class QScreenBody(QSymbols):
+    weights: dict[str, float] | None = None
+    universe: str = "all"
+    sector_neutral: bool = False
+    sector: str | None = None
+    min_score: float | None = None
+    limit: int = Field(30, ge=1, le=200)
+
+
+class QFactorBtBody(QSymbols):
+    factor: str = "momentum_12_1"
+    top_k: int = Field(5, ge=1, le=50)
+    lookback: str = "8y"
+    cost_bps: float = Field(10.0, ge=0, le=100)
+
+
+class QPairsBody(QSymbols):
+    lookback: str = "2y"
+    min_corr: float = Field(0.6, ge=-1, le=1)
+    limit: int = Field(20, ge=1, le=100)
+
+
+class QAllocBody(QSymbols):
+    method: str = "risk_parity"
+    lookback: str = "1y"
+    max_weight: float | None = Field(None, gt=0, le=1)
+    capital: float | None = Field(None, gt=0)
+
+
+class QHedgeBody(BaseModel):
+    positions: dict[str, float] | None = None
+    instruments: list[str] | None = None
+    lookback: str = "1y"
 
 
 class ClaudeNew(BaseModel):
@@ -190,6 +295,10 @@ def create_app() -> FastAPI:
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):
         bus.bind_loop(asyncio.get_running_loop())
+        if settings.autobench_workspace:
+            from pathlib import Path
+
+            iap.write_workspace_mcp(Path(settings.autobench_workspace), settings.autobench_port)
         if settings.autobench_background:
             scheduler.start()
             await asyncio.to_thread(trading.start)
@@ -197,9 +306,14 @@ def create_app() -> FastAPI:
             yield
         scheduler.stop()
         await asyncio.to_thread(trading.stop)
+        from .services.broker.gateway import gateway
+
+        if gateway.enabled:
+            await asyncio.to_thread(gateway.stop, "Server shutting down")
 
     app = FastAPI(title="Autobench", version="0.1.0", lifespan=lifespan)
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["*"], allow_headers=["*"])
+    app.add_middleware(IapMiddleware)  # outermost: nothing runs for a request without an owner identity (Cloud Run)
 
     @app.exception_handler(ValueError)
     async def _value_error(_r: Request, e: ValueError):
@@ -213,11 +327,19 @@ def create_app() -> FastAPI:
     async def _provider_error(_r: Request, e: ProviderError):
         return JSONResponse({"detail": str(e)}, status_code=502)
 
+    @app.exception_handler(state_store.Superseded)
+    async def _superseded(_r: Request, e: state_store.Superseded):
+        return JSONResponse({"detail": str(e)}, status_code=503)
+
     # --- meta -----------------------------------------------------------------------------
 
     @app.get("/api/health")
     def health():
-        return {"ok": True, **market.provider_status(), "alpaca_configured": settings.alpaca_enabled}
+        from . import state_store
+
+        m = state_store.active()
+        return {"ok": True, **market.provider_status(), "alpaca_configured": settings.alpaca_enabled,
+                "state": m.status() if m else {"store": "local"}}
 
     # --- market data ----------------------------------------------------------------------
 
@@ -303,6 +425,68 @@ def create_app() -> FastAPI:
     @app.post("/api/signal-study")
     def run_study(b: StudyBody):
         return backtest.signal_study(b.symbol, b.condition, b.interval, b.lookback, b.horizons)
+
+    # --- QBench (quant workstation) -------------------------------------------------------
+
+    @app.get("/api/qbench/strategies")
+    def q_strategies(kind: str | None = None, family: str | None = None):
+        return {"strategies": qstrat.catalog(kind, family, full=True)}
+
+    @app.post("/api/qbench/strategy-run")
+    def q_strategy_run(b: QRunBody):
+        return qlab.run_strategy(b.symbol, b.strategy, b.params, b.lookback, b.cost_bps, b.allow_short)
+
+    @app.post("/api/qbench/lab/{symbol}")
+    def q_lab_run(symbol: str, b: QLabBody = Body(default_factory=QLabBody)):
+        res = qlab.run_lab(symbol, b.strategies, b.lookback, b.cost_bps, b.allow_short)
+        bus.publish("qbench.lab", {"symbol": res["symbol"], "author": "user", "best": res["best"]})
+        return res
+
+    @app.get("/api/qbench/lab/{symbol}")
+    def q_lab_last(symbol: str):
+        return {"result": qlab.last_lab(symbol)}
+
+    @app.get("/api/qbench/profile/{symbol}")
+    def q_profile(symbol: str, lookback: str = "5y"):
+        return qprofile.quant_profile(symbol, lookback)
+
+    @app.get("/api/qbench/factors/{symbol}")
+    def q_factors(symbol: str):
+        return qfactors.factor_scores(symbol)
+
+    @app.post("/api/qbench/factor-screen")
+    def q_factor_screen(b: QScreenBody):
+        syms = b.resolve() if (b.symbols or b.watchlist) else None
+        return qfactors.factor_screen(b.weights, b.universe, b.sector_neutral, b.min_score, b.sector, b.limit, syms)
+
+    @app.post("/api/qbench/factor-backtest")
+    def q_factor_backtest(b: QFactorBtBody):
+        return qxs.run_factor_backtest(b.resolve(b.top_k + 2), b.factor, b.top_k, b.lookback, b.cost_bps)
+
+    @app.post("/api/qbench/pairs")
+    def q_pairs(b: QPairsBody):
+        return qpairs.find_pairs(b.resolve(2), b.lookback, b.min_corr, b.limit)
+
+    @app.get("/api/qbench/pair")
+    def q_pair(a: str, b: str, lookback: str = "5y", entry_z: float = 2.0, exit_z: float = 0.0, stop_z: float = 4.0,
+               notional: float | None = None):
+        return qpairs.analyze_pair(a, b, lookback, entry_z=entry_z, exit_z=exit_z, stop_z=stop_z, notional=notional)
+
+    @app.post("/api/qbench/allocate")
+    def q_allocate(b: QAllocBody):
+        return qhedge.optimize_allocation(b.resolve(2), b.method, b.lookback, b.max_weight, b.capital)
+
+    @app.post("/api/qbench/hedge")
+    def q_hedge(b: QHedgeBody):
+        return qhedge.hedge_plan(b.positions, b.instruments, b.lookback)
+
+    @app.get("/api/qbench/confluence/{symbol}")
+    def q_confluence(symbol: str, run_lab: bool = False):
+        return qconf.confluence(symbol, run_lab=run_lab)
+
+    @app.post("/api/qbench/rank")
+    def q_rank(b: QSymbols):
+        return qconf.rank(b.resolve(0))  # an empty watchlist is a valid (empty) ranking
 
     # --- annotations ----------------------------------------------------------------------
 
@@ -639,6 +823,51 @@ def create_app() -> FastAPI:
         trading.start()
         return trading.status()
 
+    @app.post("/api/trading/gateway/start", dependencies=guard)
+    def trading_gateway_start():
+        """User only: start the managed IB Gateway (Cloud Run) now rather than on the first trading call."""
+        from .services.broker.gateway import gateway
+
+        if not gateway.enabled:
+            raise HTTPException(400, "IB Gateway is not managed here: start IB Gateway/TWS yourself")
+        st = gateway.ensure_running()
+        trading.start()
+        return st
+
+    @app.post("/api/trading/gateway/stop", dependencies=guard)
+    def trading_gateway_stop():
+        from .services.broker.gateway import gateway
+
+        if not gateway.enabled:
+            raise HTTPException(400, "IB Gateway is not managed here")
+        return gateway.stop("Stopped from the Trading page")
+
+    @app.post("/api/trading/gateway/2fa", dependencies=guard)
+    def trading_gateway_2fa(body: dict = Body(...)):
+        """User only: the one-time code from the owner's authenticator app, typed into IB Gateway's 2FA dialog.
+        Never an agent tool."""
+        from .services.broker.gateway import gateway
+
+        if not gateway.enabled:
+            raise HTTPException(400, "IB Gateway is not managed here")
+        try:
+            return gateway.submit_2fa_code(str(body.get("code", "")))
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.get("/api/trading/gateway/screen", dependencies=guard)
+    def trading_gateway_screen():
+        """User only: a PNG of the managed IB Gateway's screen, to see a login dialog (2FA choice) IBC cannot answer."""
+        from fastapi import Response
+
+        from .services.broker.gateway import gateway
+
+        try:
+            png = gateway.screenshot()
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return Response(png, media_type="image/png", headers={"Cache-Control": "no-store"})
+
     @app.post("/api/trading/connect", dependencies=guard)
     def trading_connect(body: BrokerConnection):
         return trading.reconnect(body.broker, body.host, body.port, body.client_id, body.account)
@@ -809,6 +1038,8 @@ def create_app() -> FastAPI:
         # browsers let any site open a WebSocket to localhost, and the stream carries Claude chat text:
         # only this machine's UI (or a non-browser client, which sends no Origin) may listen
         local = _LOCAL_HOSTS | {settings.autobench_host}
+        if _verified_owner(socket.scope.get("state")):
+            local = local | {socket.url.hostname or ""}  # the service's own host, reached through IAP
         origin = socket.headers.get("origin")
         if (socket.url.hostname or "") not in local or (origin and (urlparse(origin).hostname or "") not in local):
             await socket.close(code=1008)
@@ -824,6 +1055,44 @@ def create_app() -> FastAPI:
             pass
         finally:
             bus.unsubscribe(q)
+
+    # --- Financier mode ---------------------------------------------------------------------
+    # Financier's web console (Flutter build) at /financier/, framed by the Mode selector, and its
+    # data (vral-altos Firestore, read-only) for the links between the two modes.
+
+    @app.get("/api/financier/status")
+    def financier_status():
+        return financier_svc.status()
+
+    @app.get("/api/financier/summary")
+    def financier_summary(refresh: bool = False):
+        # an optional link: no Google login / no access is a state to show, not a failed request
+        try:
+            return {"available": True, **financier_svc.summary(refresh=refresh)}
+        except ProviderError as e:
+            return {"available": False, "error": str(e), "project": financier_svc.project()}
+
+    @app.get("/financier", include_in_schema=False)
+    def financier_root():
+        return RedirectResponse("/financier/")
+
+    @app.get("/financier/{path:path}", include_in_schema=False)
+    def financier_files(path: str = ""):
+        if financier_svc.ui_dir() is None:
+            return HTMLResponse(
+                "<!doctype html><meta charset=utf-8><title>Financier</title>"
+                "<body style='font:13px system-ui;background:#0f1218;color:#8b93a5;display:grid;place-items:center;height:100vh;margin:0'>"
+                "<div>Financier is not built. Run <code>flutter build web --release --dart-define-from-file=.env</code> "
+                "in tools/Financier/app.</div>", status_code=404)
+        f = financier_svc.ui_file(path)
+        if f is not None and f.name != "index.html":
+            # bootstrap and service-worker files pin the build, so they must never be stale
+            fresh = f.name in ("flutter_bootstrap.js", "flutter_service_worker.js", "version.json")
+            return FileResponse(f, headers={"Cache-Control": "no-cache" if fresh else "public, max-age=3600, must-revalidate"})
+        if f is None and "." in path.rsplit("/", 1)[-1]:
+            raise HTTPException(404, "Not found")
+        # the console itself (and any of its in-app routes)
+        return HTMLResponse(financier_svc.index_html(), headers={"Cache-Control": "no-cache"})
 
     # MCP streamable-HTTP endpoint at /mcp
     app.router.routes.extend(mcp_app.routes)

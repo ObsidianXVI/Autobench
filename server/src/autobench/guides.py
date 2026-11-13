@@ -47,8 +47,21 @@ Working rules:
   user's approval unless they enabled auto mode on a paper account; risk limits are enforced on the
   server. You cannot approve, change limits or arm live trading. Read rejections (get_order_tickets)
   and do not re-propose the same order unchanged. Review results with get_trade_history.
+- QBench (quant workstation): get_quant_profile (regime: trending / mean-reverting / random walk), run_strategy_lab
+  (walk-forward test of the strategy library on a stock), get_factor_scores / factor_screen (value, quality, growth,
+  momentum, low-vol ranks over ~6,000 stocks), run_factor_backtest (rank a watchlist), find_pairs / analyze_pair
+  (stat arb), optimize_allocation (risk parity, HRP), get_hedge_plan (beta hedges), get_quant_confluence and
+  rank_watchlist_quant (TA + FA + quant in one score with quant-derived levels and sizing), list_quant_strategies
+  (rules, papers, evidence, failure modes). Before using them read get_guide("quant"). Judge strategies by
+  out-of-sample timing alpha deflated for the number of trials (alpha_dsr), never by in-sample Sharpe; a long-only
+  rule on a rising stock earns a positive Sharpe for free. Most single-stock timing rules have no edge: say so.
+- Financier is Autobench's second mode (the user's finance console: accounts, budgets, cashflow forecasts,
+  the trading Portfolio and its risk plans), in the same vral-altos Firebase store. get_financier_summary
+  shows which Portfolio and Virtual Accounts (e.g. L-Fund) the brokerage account backs and Financier's
+  stop/target per open position; size against that capital and flag stops that disagree.
+  show_in_ui(page="financier", tab="portfolio") opens it. It is read-only to you.
 - Recommendations are research output, not financial advice; state key risks and uncertainty.
-Guides: get_guide("workflow" | "expressions" | "annotations" | "interpretation" | "screener" | "trading").
+Guides: get_guide("workflow" | "expressions" | "annotations" | "interpretation" | "screener" | "trading" | "quant").
 """
 
 EXPRESSIONS = """\
@@ -198,5 +211,106 @@ loss and order-count limits, symbol allow/block lists, live accounts read-only u
 them, and the kill switch (halt) blocks everything except the user's closing orders.
 """
 
-GUIDES = _Guides({"trading": TRADING, "workflow": WORKFLOW, "expressions": EXPRESSIONS, "annotations": ANNOTATIONS,
+QUANT_WORKFLOW = """\
+QBench study of one stock (quant-research skill):
+1. Prior work: search_notes(symbol), list_analyses(symbol). Base rate: get_market_overview / market-regime skill.
+2. get_quant_profile(symbol): regime verdict + favoured families, vol percentile, factor-ETF betas, tails, seasonality.
+3. get_factor_scores(symbol): value / quality / growth / momentum / low-vol percentiles, market-wide and in-sector.
+4. run_strategy_lab(symbol): which library strategies survive walk-forward with alpha_dsr ≥ 0.6? Read
+   param_stability, entries (trade count) and the verdict; inspect a survivor with run_quant_strategy (yearly returns,
+   trades). Cross-check robustness: run_strategy_lab on 2-3 peers or the sector ETF; a real effect should not be
+   unique to one ticker.
+5. get_quant_confluence(symbol): TA / FA / quant pillars, agreement, preferred plan, vol-target weight, Kelly bound.
+6. Risk: correlation to current holdings (get_correlations, get_hedge_plan with the portfolio), position size from the
+   stop (calculate_position_size) capped by the vol-target weight.
+7. Decide and record: the quant view feeds the stock-research verdict (save_analysis with the strategy id, params and
+   OOS numbers in the rationale); save_note the study (tag 'qbench'). Draw the plan levels with chart-annotation.
+"""
+
+QUANT = """\
+QBench playbook: how to do quant research honestly with Autobench.
+
+A. EVIDENCE STANDARDS (most backtests are false positives)
+- Multiple testing: trying N variants inflates the best Sharpe. With ~45 configurations on 5 years of daily data
+  the best in-sample Sharpe is ~1 by luck alone (Bailey & López de Prado, MinBTL). The lab reports dsr / alpha_dsr:
+  the probability the result beats the best of all combinations tried by chance. ≥ 0.95 strong, 0.6-0.9 suggestive,
+  < 0.5 indistinguishable from data mining. Count every variant you try, including ones you discard.
+- Timing alpha, not Sharpe: a long-only rule on a rising stock inherits its drift. Skill = alpha in
+  r_strategy = a + b·r_stock (alpha_annual_pct, alpha_t, alpha_dsr). "de-risks only" = same Sharpe, smaller drawdown:
+  useful as risk control, not as an edge.
+- Out-of-sample: the lab's walk-forward re-optimises on past data only. Low param_stability (< 0.5) = the "best"
+  parameters jump around = fragile. A big drop from in_sample_best Sharpe to OOS Sharpe = overfit.
+- Sample size: < 30 round trips is anecdotal; t-stat of the mean trade > 2; PSR > 0.95 for Sharpe > 0.
+  MinTRL: a Sharpe of 0.5 needs roughly 10+ years of daily data to be distinguished from zero.
+- Post-publication decay: anomalies lose ~35-55% of their return after publication (McLean & Pontiff 2016), more for
+  liquid large caps. Expect live results well below the paper and below the backtest.
+- Costs: 5 bps per unit of turnover is a liquid-large-cap floor; small caps 20-50 bps. Daily strategies (IBS, RSI(2),
+  overnight) live or die on costs: rerun with cost_bps doubled before trusting them.
+- Survivorship: watchlists and today's index members are survivors; compare a ranking strategy with the equal-weighted
+  list (run_factor_backtest does), not with cash.
+- Regime dependence: report the worst year (yearly table) and the max drawdown; ask whether today's regime resembles
+  the periods that made the money.
+
+B. DIAGNOSING A STOCK (get_quant_profile)
+- Hurst (log prices, 2y): ~0.5 random walk; > 0.58 persistent (trend); < 0.42 anti-persistent (reversion). A random
+  walk scatters with sd ≈ 0.04 over 2 years, so 0.45-0.55 means nothing; prefer the variance-ratio z-stats.
+- Variance ratio VR(q) (Lo-MacKinlay, robust z): VR > 1 with z > 1.96 = momentum at horizon q; VR < 1 with z < -1.96 =
+  reversion. VR(2) < 1 alone often reflects bid-ask bounce.
+- ADF on log price: individual stocks almost never reject a unit root (p > 0.1 is normal). Mean reversion in a single
+  stock is usually around a moving mean (half_life_vs_sma50_bars), not a fixed level. Spreads (pairs) are where ADF matters.
+- Most liquid large caps test as "random walk": then price-only timing rules are unlikely to add alpha; the edge, if any,
+  is in factor selection (which stocks), sizing (vol targeting) and risk control (trend filters, hedges).
+- Vol percentile > 80: shrink size (vol-target weight falls automatically), widen stops in ATR terms, expect
+  mean reversion of vol. Vol clusters: today's vol is the best forecast of next month's.
+- Factor-ETF betas (proxies: IWM-SPY size, IWD-IWF value, MTUM/QUAL/USMV minus SPY): know what you really own; a
+  "stock pick" with momentum beta 1.2 is largely a momentum-factor bet. Alpha_t > 2 over 2 years is rare.
+- Overnight vs intraday: US stocks earn most of their drift overnight (Lou, Polk & Skouras 2019).
+
+C. STRATEGY FAMILIES (list_quant_strategies for full cards with papers)
+- Trend / time-series momentum (tsmom, ma_trend, donchian, dual_momentum, high52): strong evidence across a century and
+  asset classes, mostly via diversified futures and volatility scaling (Kim-Tse-Wald). On single stocks: lower win
+  rate, positive skew, whipsaw in ranges, losses at V-reversals. Main value for a stock trader: a regime/risk filter
+  (stay out below the 200-day; cut drawdowns), not alpha.
+- Cross-sectional momentum (12-1, residual momentum, 52-week high): among the most robust anomalies; residual momentum
+  (Blitz-Huij-Martens) avoids most momentum-crash risk. Crashes happen in sharp junk rallies after bear markets
+  (2009). Use to choose which watchlist names to favour, monthly.
+- Short-term reversal / mean reversion (rsi2, ibs, bb_revert, reversal_1m): real but cost-sensitive and strongest in
+  index ETFs and liquid large caps in bull markets; always with a trend filter (above SMA200) and an exit at the
+  mean; on single stocks earnings gaps and news break it.
+- Factors (value, quality/profitability, low volatility, momentum): long-horizon premia, multi-year drawdowns
+  (value 2007-2020). Combine (quality + value, quality + momentum) rather than use one; factor_screen with
+  sector_neutral=True avoids accidental sector bets.
+- Volatility targeting: smoother risk; real-time return benefit is contested (Cederburg et al. 2020). Use for sizing.
+- Seasonality (turn of month, day of week): weak on single names; never a stand-alone reason to trade.
+- Stat arb / pairs: needs a short leg and an economic link; profits have declined since the 1990s (Do & Faff) mostly
+  because more pairs fail to re-converge. find_pairs tests many pairs: expect 5% false positives. Require
+  analyze_pair OOS results, a stable hedge ratio and same-industry economics. Without shorting, use the z-score to time
+  buying the cheap leg, or hedge with the sector ETF.
+- Event: PEAD has largely disappeared in large caps since ~2006 (Martineau 2022). Dividend capture is a myth.
+
+D. COMBINING QUANT WITH FA / TA (get_quant_confluence, rank_watchlist_quant)
+- Use factors to choose WHAT (rank the watchlist: quality + momentum, reasonable value), the regime and a tested
+  strategy to choose HOW (pullback in trend vs reversion band vs breakout), TA levels to choose WHERE (entry zone,
+  structural stop), and volatility to choose HOW MUCH.
+- Pillars "conflicting" (spread > 40 points) → smaller size or wait. Strong FA + weak TA = watch for the trend to turn;
+  strong TA + weak FA = trade the trend with tight risk, not a long-term hold.
+- The lab's "position today" is a signal only for strategies whose verdict is robust/promising; otherwise ignore it.
+
+E. SIZING AND RISK
+- Fixed-fractional risk to the stop stays the primary rule (trade-planning skill and the user's tier rules).
+- Cap the position at the vol-target weight (10% annual risk budget / stock vol): a 60%-vol stock gets ≤ ~17% of equity.
+- Kelly f = μ/σ² overstates the optimal bet because μ is estimated with large error: never more than half Kelly,
+  usually far less; Autobench caps it at 25%.
+- Correlation: two positions with ρ > 0.7 are close to one bet; check get_correlations / optimize_allocation before
+  adding. Portfolio beta: get_hedge_plan; hedge (SPY/sector ETF/puts) only when the thesis is stock-specific and the
+  market regime is hostile.
+
+F. REPORTING A QUANT VIEW
+- Lead with the verdict and the strongest number with its uncertainty ("tsmom 252d: OOS Sharpe 0.8 vs buy-and-hold 0.7,
+  alpha 1.2%/yr, alpha_t 0.6, alpha_dsr 0.41 → not significant; useful only as a drawdown filter").
+- State the number of variants tried, the OOS window, costs, and the worst year. Say plainly when nothing works.
+- Record: save_analysis rationale names the strategy id + params + OOS stats; save_note(tags=["qbench", symbol]).
+"""
+
+GUIDES = _Guides({"quant": QUANT, "trading": TRADING, "workflow": WORKFLOW, "expressions": EXPRESSIONS, "annotations": ANNOTATIONS,
                   "interpretation": INTERPRETATION})

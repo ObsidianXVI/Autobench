@@ -37,7 +37,7 @@ String? claudeBlocker() {
   final auth = st['auth'];
   if (!auth.isNull && auth['ok'].b == false) {
     return auth['logged_in'].b == true
-        ? 'Claude Code is signed in with ${auth['method'].s ?? 'an API key'}, not your Claude subscription. Run `claude`, then /login.'
+        ? 'Claude Code is signed in with ${auth['method'].s ?? 'an API key'}, not your Claude subscription (API keys are not used). Run `claude`, then /login.'
         : 'Claude Code is not signed in. Run `claude` in a terminal and /login with your Claude subscription.';
   }
   return null;

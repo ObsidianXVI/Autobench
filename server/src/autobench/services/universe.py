@@ -22,6 +22,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
+import httpx
 import numpy as np
 import pandas as pd
 
@@ -58,6 +59,41 @@ def _data_dir() -> Path:
     return d
 
 
+# Snapshots in Cloud Storage (AUTOBENCH_STATE_BUCKET), so a cold start on Cloud Run loads the universe
+# instead of rebuilding it for minutes. Live quotes change every refresh and are not worth keeping.
+_EPHEMERAL_LAYERS = {"quotes"}
+
+
+def _fetch_snapshot(name: str, path: Path) -> None:
+    s = get_settings()
+    if not s.autobench_state_bucket or name in _EPHEMERAL_LAYERS:
+        return
+    from . import gcp
+
+    try:
+        with httpx.Client(timeout=120) as client:
+            data = gcp.gcs_get(client, s.autobench_state_project or "vral-altos", s.autobench_state_bucket,
+                               f"universe/{name}.pkl")
+        if data:
+            path.write_bytes(data)
+    except Exception as e:  # noqa: BLE001 — a missing snapshot only means a rebuild
+        log.warning("universe snapshot %s not fetched: %s", name, e)
+
+
+def _publish_snapshot(name: str, path: Path) -> None:
+    s = get_settings()
+    if not s.autobench_state_bucket or name in _EPHEMERAL_LAYERS:
+        return
+    from . import gcp
+
+    try:
+        with httpx.Client(timeout=300) as client:
+            gcp.gcs_put(client, s.autobench_state_project or "vral-altos", s.autobench_state_bucket,
+                        f"universe/{name}.pkl", path.read_bytes())
+    except Exception as e:  # noqa: BLE001
+        log.warning("universe snapshot %s not published: %s", name, e)
+
+
 class _Layer:
     """A persisted DataFrame/object with a refresh timestamp."""
 
@@ -78,6 +114,8 @@ class _Layer:
             return
         self._loaded_from = self.path
         self.value, self.updated = None, 0
+        if not self.path.exists():
+            _fetch_snapshot(self.name, self.path)
         if self.path.exists():
             try:
                 with self.path.open("rb") as f:
@@ -91,6 +129,7 @@ class _Layer:
         with tmp.open("wb") as f:
             pickle.dump((value, self.updated), f, protocol=pickle.HIGHEST_PROTOCOL)
         tmp.replace(self.path)
+        _publish_snapshot(self.name, self.path)
 
     def age(self) -> float:
         self.load()
@@ -173,7 +212,18 @@ class Universe:
             self.listings.store(_fake_listings())
             return
         self._progress["listings"] = "Nasdaq listings"
-        df = reference.nasdaq_listings()
+        try:
+            df = reference.nasdaq_listings()
+        except ProviderError as e:
+            # Nasdaq's API refuses some networks (Cloud Run's included): keep the last listings, so the layers
+            # built on them (fundamentals, bars) still refresh. New listings wait for a refresh that works.
+            self.listings.load()
+            if self.listings.value is None:
+                raise
+            log.warning("Nasdaq listings unavailable (%s); keeping the listings of %s", e,
+                        time.strftime("%Y-%m-%d", time.gmtime(self.listings.updated)))
+            self.listings.store(self.listings.value)
+            return
         try:
             sp = reference.sp500_members()
         except ProviderError as e:
@@ -510,6 +560,9 @@ def technicals(m: dict) -> pd.DataFrame:
     out["atr_pct"] = out["atr14"] / last * 100
     rets = close.pct_change(fill_method=None)
     out["volatility_1m"] = rets.iloc[-21:].std() * np.sqrt(252) * 100
+    out["volatility_1y"] = rets.iloc[-252:].std() * np.sqrt(252) * 100
+    # 12-1 momentum (Jegadeesh-Titman): return from 12 months ago to 1 month ago
+    out["mom_12_1"] = (close.iloc[-22] / close.iloc[-253] - 1) * 100 if n > 253 else np.nan
     out["range_1w"] = ((high - low) / close).iloc[-5:].mean() * 100
     out["avg_volume"] = vol.iloc[-64:-1].mean()  # 3 months, excluding the current session
     out["avg_volume_20"] = vol.iloc[-21:-1].mean()
@@ -592,7 +645,9 @@ def _derive(df: pd.DataFrame) -> pd.DataFrame:
                 df[f"sma{k}_pct"] = (price / df[f"sma{k}"] - 1) * 100
         df["perf_today"] = df["change_pct"]
     df["index"] = np.where(col("sp500").fillna(False).astype(bool), "S&P 500", "")
-    return df
+    from .qbench.factors import add_factor_columns  # QBench factor ranks (q_*)
+
+    return add_factor_columns(df)
 
 
 # --- SEC fundamentals ----------------------------------------------------------------------

@@ -17,6 +17,7 @@ import '../kit/icons.dart';
 import '../kit/overlay.dart';
 import '../kit/spark.dart';
 import '../store.dart';
+import 'qbench/common.dart';
 
 class FieldMeta {
   final String key, label, group, fmt, desc;
@@ -60,9 +61,13 @@ class ScreenerPage {
   final HTMLElement _bar = h('div.scr-bar');
   final HTMLElement _results = h('div.scr-results');
   final HTMLElement _pager = h('div.scr-pager');
-  List<FieldMeta> _fields = [];
+  List<FieldMeta> _allFields = [];
+
+  /// QBench factor fields (group 'QBench') only while 'Show QBench Controls' is on.
+  List<FieldMeta> get _fields => qbenchOn ? _allFields : [for (final f in _allFields) if (f.group != 'QBench') f];
   Map<String, FieldMeta> _byKey = {};
-  Map<String, List<String>> _views = {};
+  Map<String, List<String>> _allViews = {};
+  Map<String, List<String>> get _views => {for (final e in _allViews.entries) if (qbenchOn || e.key != 'qbench') e.key: e.value};
   Map<String, String> _signals = {};
   List<J> _saved = [];
   List<String> _watchlists = [];
@@ -112,9 +117,9 @@ class ScreenerPage {
     replace(_results, h('div.loading-block', [h('div.spinner'), h('div.muted', 'Loading screener…')]));
     try {
       _meta = await request('/api/screener/meta');
-      _fields = [for (final f in _meta['fields'].list) FieldMeta.fromJson(f)];
-      _byKey = {for (final f in _fields) f.key: f};
-      _views = {for (final e in _meta['views'].map.entries) e.key: [for (final c in e.value.list) c.s ?? '']};
+      _allFields = [for (final f in _meta['fields'].list) FieldMeta.fromJson(f)];
+      _byKey = {for (final f in _allFields) f.key: f};
+      _allViews = {for (final e in _meta['views'].map.entries) e.key: [for (final c in e.value.list) c.s ?? '']};
       _signals = {for (final e in _meta['signals'].map.entries) e.key: e.value.s ?? ''};
       _saved = _meta['screens'].list;
       _watchlists = [for (final w in (await request('/api/watchlists')).list) w['name'].s ?? ''];
@@ -145,7 +150,8 @@ class ScreenerPage {
 
   void onShow() {
     // the agent (or the watchlist) may have changed the screen while the page was hidden
-    if (_fields.isNotEmpty) {
+    if (_allFields.isNotEmpty) {
+      if (!qbenchOn && _filterTab == 'QBench') _filterTab = 'Descriptive';
       _renderControls();
       _run();
     }
@@ -209,11 +215,15 @@ class ScreenerPage {
     return sel;
   }
 
-  static const _tabGroups = {
+  static const _baseTabGroups = {
     'Descriptive': ['Descriptive'],
     'Fundamental': ['Valuation', 'Financial'],
     'Technical': ['Performance', 'Technical'],
   };
+  Map<String, List<String>> get _tabGroups => {
+        ..._baseTabGroups,
+        if (qbenchOn) 'QBench': ['QBench'],
+      };
 
   void _renderFilters() {
     final active = {for (final f in _activeFilters) f['field'].s: f};
